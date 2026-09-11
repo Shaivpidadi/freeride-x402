@@ -3,11 +3,11 @@ name: freeride
 description: >-
   Diagnose and fix the FreeRide gateway that serves this agent's models.
   Use whenever model requests fail or stall (connection refused, HTTP 503,
-  "All providers failed", "No providers have usable keys", provider
-  unavailable/rate limit notices, empty model list, slow first token),
-  whenever the user asks about the daemon, providers, API keys, models,
-  cooldowns, or telemetry, and before touching anything under ~/.freeride
-  or ~/.ridex.
+  HTTP 402, "All providers failed", "No providers have usable keys",
+  provider unavailable/rate limit notices, empty model list, slow first
+  token, Hedera/x402/wallet prompts), whenever the user asks about the
+  daemon, providers, API keys, models, cooldowns, wallet, or telemetry,
+  and before touching anything under ~/.freeride or ~/.ridex.
 ---
 
 # FreeRide operations
@@ -21,7 +21,8 @@ the fault is almost always in this chain, and you can diagnose and fix it
 yourself with the commands below.
 
 ```
-ridex (this agent) ──fx gateway dialect──▶ FreeRide :11343 ──failover──▶ free providers
+ridex ──fx──▶ FreeRide :11343 ──free failover──▶ providers
+                         └─ free dies + wallet set ──auto-pay──▶ paid OpenRouter
 ```
 
 Architecture facts that matter for diagnosis:
@@ -49,6 +50,12 @@ Architecture facts that matter for diagnosis:
   truncates that one response (known limitation); just retry the turn.
 - Inbound auth is ignored — any Bearer token works against FreeRide. The
   real provider keys live server-side in `~/.freeride/.env`.
+- **Free-first, optional Hedera cash lane**: when every free key is dead
+  and x402 is enabled with a payer in `~/.freeride/.env`, FreeRide
+  **auto-pays** (daemon-side) and continues on paid OpenRouter in the
+  same turn. Response headers include `X-FreeRide-Lane: paid`. Without a
+  payer, the gateway returns **HTTP 402** — tell the user to run
+  `ridex wallet setup` (never invent a second agent).
 
 ## First move: read the gateway's own diagnosis
 
@@ -61,10 +68,11 @@ freeride doctor
 
 These read-only diagnostics are **pre-approved** — run them without
 hesitation: `freeride doctor`, `freeride keys`, `freeride providers`,
-`freeride telemetry`, `freeride --version`, `ridex doctor`, and any
-plain `curl` of `127.0.0.1:11343/health`. Run each as its OWN
-command: chaining (`&&`, `;`, pipes) or wrapping them forfeits the
-pre-approval and triggers a permission review.
+`freeride telemetry`, `freeride wallet status`, `freeride --version`,
+`ridex doctor`, `ridex wallet status`, and any plain `curl` of
+`127.0.0.1:11343/health`. Run each as its OWN command: chaining
+(`&&`, `;`, pipes) or wrapping them forfeits the pre-approval and
+triggers a permission review.
 
 `/health` returns `{"ok": true, "version": ..., "providers": [...],
 "keyed_providers": [...]}`. Read it precisely:
@@ -89,7 +97,8 @@ The launcher manages the daemon; state lives in `~/.ridex/`:
 | `ridex start`    | start the daemon (clears a previous stop) |
 | `ridex stop`     | stop it — **sticks** via `~/.ridex/daemon.stopped` until `ridex start` |
 | `ridex restart`  | stop + wait for the port to free + start |
-| `ridex doctor`   | agent binary + daemon + key report (wraps `freeride doctor`) |
+| `ridex doctor`   | agent binary + daemon + key + wallet report |
+| `ridex wallet status|setup` | Hedera x402 cash-lane (passthrough to `freeride wallet`) |
 
 - The daemon is SUPERVISED where possible: a launchd LaunchAgent on
   macOS (`xyz.free-ride.gateway`, KeepAlive on abnormal exit) or a
@@ -105,6 +114,16 @@ The launcher manages the daemon; state lives in `~/.ridex/`:
   `lsof -nP -iTCP:11343 -sTCP:LISTEN`.
 
 ## Reading failures
+
+**HTTP 402** — free tier exhausted and Hedera x402 is on, but no local
+payer is configured (or auto-pay failed). Tell the user:
+
+```bash
+ridex wallet setup
+```
+
+Then `ridex restart` (or `freeride reload`). With payer + pay_to set,
+the next turn should auto-pay silently (`X-FreeRide-Lane: paid`).
 
 **Structured 503 (JSON body)** — the gateway exhausted its chain. The body
 lists exactly what was tried:

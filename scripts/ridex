@@ -7,6 +7,7 @@
 #
 #   ridex start|stop|restart   manage the FreeRide daemon
 #   ridex doctor               daemon + agent health report
+#   ridex wallet …             passthrough to `freeride wallet` (Hedera x402)
 #   ridex <anything else>      forwarded to the agent binary,
 #                              auto-starting the daemon first
 #
@@ -240,6 +241,47 @@ ensure_keys() {
     $FREERIDE_CMD reload >/dev/null 2>&1 || true
 }
 
+# Hedera cash lane: when x402 is enabled without a payer, or the gateway
+# already answered 402, offer one interactive wallet setup (same ~/.freeride/.env).
+WALLET_PROMPT_MARKER="$RIDEX_HOME/wallet.setup-prompted"
+
+ensure_wallet() {
+    command -v "${FREERIDE_CMD%% *}" >/dev/null 2>&1 || return 0
+    # Only prompt once per machine unless marker cleared.
+    [ -e "$WALLET_PROMPT_MARKER" ] && return 0
+
+    _needs=0
+    # freeride wallet status is cheap and never prints secrets.
+    _wstat=$($FREERIDE_CMD wallet status 2>/dev/null || true)
+    echo "$_wstat" | grep -q 'enabled     : yes' || return 0
+    echo "$_wstat" | grep -q 'auto-pay    : yes' && return 0
+    # enabled but no auto-pay → missing payer or pay_to
+    _needs=1
+
+    if [ "$_needs" = "1" ]; then
+        mkdir -p "$RIDEX_HOME"
+        touch "$WALLET_PROMPT_MARKER"
+        if [ -t 0 ]; then
+            printf 'ridex: Free models need a Hedera cash lane when free dies. Run setup? [Y/n] ' >&2
+            read -r _ans || _ans=n
+            case "$_ans" in
+                ""|y|Y|yes|YES)
+                    $FREERIDE_CMD wallet setup || {
+                        echo "ridex: wallet setup did not complete; run: ridex wallet setup" >&2
+                        return 0
+                    }
+                    $FREERIDE_CMD reload >/dev/null 2>&1 || true
+                    ;;
+                *)
+                    echo "ridex: skipped. Later: ridex wallet setup" >&2
+                    ;;
+            esac
+        else
+            echo "ridex: x402 enabled without payer — run: ridex wallet setup" >&2
+        fi
+    fi
+}
+
 # The agent's operational knowledge of FreeRide ships as an fx skill:
 # when a request fails, the model consults it to self-diagnose (daemon
 # state, keys, cooldowns, failover taxonomy). Installed/refreshed into
@@ -265,6 +307,7 @@ ensure_daemon() {
     ensure_skill
     if healthy; then
         ensure_keys
+        ensure_wallet
         return 0
     fi
     if [ -e "$STOP_MARKER" ]; then
@@ -280,6 +323,7 @@ ensure_daemon() {
         exit 1
     fi
     ensure_keys
+    ensure_wallet
 }
 
 stop_daemon() {
@@ -313,6 +357,8 @@ doctor() {
     if command -v "${FREERIDE_CMD%% *}" >/dev/null 2>&1; then
         # Key/provider status lives with the gateway.
         $FREERIDE_CMD doctor 2>/dev/null || true
+        echo
+        $FREERIDE_CMD wallet status 2>/dev/null || true
     else
         echo "  freeride     : not installed — curl -sSL https://api.free-ride.xyz/install.sh | sh"
     fi
@@ -348,6 +394,15 @@ case "${1:-}" in
         ;;
     doctor)
         doctor
+        ;;
+    wallet)
+        require_freeride
+        shift
+        if [ "${1:-}" = "" ]; then
+            exec $FREERIDE_CMD wallet status
+        fi
+        # shellcheck disable=SC2086
+        exec $FREERIDE_CMD wallet "$@"
         ;;
     *)
         ensure_daemon

@@ -63,6 +63,11 @@ pub fn formatSchemaDiagnostic(alloc: Allocator, detail: []const u8) !?[]u8 {
 
 pub fn formatHttpErrorMessage(alloc: Allocator, status: std.http.Status, detail: []const u8) ![]u8 {
     const status_code = @intFromEnum(status);
+    // FreeRide Hedera cash lane: surface a one-line wallet hint instead of
+    // an opaque "API request failed · HTTP 402".
+    if (status_code == 402) {
+        return try alloc.dupe(u8, "FreeRide needs Hedera pay — run: ridex wallet setup");
+    }
     const title = if (status_code == 401 or status_code == 403)
         "API access denied"
     else
@@ -421,6 +426,12 @@ test "formatHttpErrorMessage masks structured and fallback secrets" {
     );
     defer alloc.free(fallback);
     try std.testing.expectEqualStrings("HTTP 503: API_KEY=[redacted]", fallback);
+
+    {
+        const msg_402 = try formatHttpErrorMessage(alloc, .payment_required, "{\"error\":{\"type\":\"payment_required\"}}");
+        defer alloc.free(msg_402);
+        try std.testing.expectEqualStrings("FreeRide needs Hedera pay — run: ridex wallet setup", msg_402);
+    }
     try std.testing.expect(std.mem.find(u8, fallback, secret) == null);
 }
 

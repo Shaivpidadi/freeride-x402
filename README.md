@@ -22,6 +22,9 @@ What the fork changes (deliberately small, to keep upstream rebases cheap):
 - A supervised gateway daemon (`ridex start|stop|restart|doctor` —
   launchd on macOS, systemd user unit on Linux) and a local key-setup
   flow, via the `scripts/ridex` launcher.
+- Free-first inference with an optional **Hedera x402** cash lane when
+  free dies: `ridex wallet setup` stores payer keys in `~/.freeride/.env`;
+  FreeRide auto-pays so the agent keeps going in the same terminal.
 - A bundled `freeride` operations skill + pre-approved read-only
   diagnostics, so the agent can debug its own model plumbing.
 - User-visible branding (`ridex`); internal `FX_*` env vars and config
