@@ -50,6 +50,7 @@ services/telemetry Cloudflare Worker + Neon schema
 - **Telemetry**: default-on aggregate beacon; opt out with `freeride telemetry off`
 
 ## Recent Changes Log
+- **2026-09-10**: ETHOnline Hedera x402 paid lane (opt-in). Free failover unchanged; when free exhausts and `FREERIDE_X402_ENABLED=1`, `/v1/chat/completions` returns 402 `PAYMENT-REQUIRED` (Hedera testnet / Blocky402). `PAYMENT-SIGNATURE` → verify+settle → paid OpenRouter. See `docs/ethonline-hedera-x402.md`, `freeride/core/x402_hedera.py`, `examples/ethonline-hedera-agent/`.
 - **2026-09-04**: ladder failure memory (recent_failure marks), local per-model ok/fail stats, fx stream review fixes (single response-metadata frame, pre-flight disconnect handling), /ridex.sh worker route
 - **2026-09-02**: fx gateway dialect (`/v3/ai/language-model`, `/coding-agent/v1/models`) serving the ridex agent; universal provider/model fallback ladder; keepalive streaming pre-flight; honest mid-stream errors; `/health.keyed_providers`; SO_REUSEADDR port probe
 - **2026-08-21**: Pin ruff to pre-0.16 E/F defaults; Windows tests set USERPROFILE for Path.home()

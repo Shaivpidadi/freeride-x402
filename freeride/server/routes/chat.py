@@ -36,6 +36,19 @@ from freeride.core.failover import (
 from freeride.core.health import sort_by_health
 from freeride.core.provider import Provider
 from freeride.core.provider_env import env_var_for
+from freeride.core.x402_hedera import (
+    X402Error,
+    attach_payment_response,
+    build_402_response,
+    decode_payment_payload,
+    extract_payment_header,
+    load_x402_config,
+    paid_openrouter_key,
+    payment_requirements_from_required,
+    build_payment_required,
+    resolve_fee_payer,
+    verify_and_settle,
+)
 from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
 
 # Underscore aliases: sibling routes historically imported these from
@@ -52,6 +65,182 @@ _env_var_for = env_var_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+
+async def _maybe_402(
+    cfg,
+    *,
+    request: Request,
+    free_detail: dict,
+    error: str = "Free providers exhausted; pay for premium inference",
+) -> JSONResponse | None:
+    """Return a 402 PaymentRequired response when x402 cash lane is ready."""
+    if not cfg.ready:
+        return None
+    resource_url = str(request.url)
+    return await build_402_response(
+        cfg,
+        resource_url=resource_url,
+        free_detail=free_detail,
+        error=error,
+    )
+
+
+async def _paid_openrouter_chat(
+    request: Request,
+    body: ChatRequest,
+    *,
+    api_key: str,
+) -> tuple[Provider, object]:
+    """Forward one chat completion via OpenRouter using a paid key only.
+
+    Prefer an already-registered openrouter provider instance so headers /
+    timeouts match production; otherwise instantiate OpenRouterProvider.
+    Does not touch global cooldown state.
+    """
+    from freeride.providers.openrouter import OpenRouterProvider
+
+    providers: list[Provider] = list(request.app.state.providers)
+    chosen = next((p for p in providers if p.name == "openrouter"), None)
+    if chosen is None:
+        chosen = OpenRouterProvider()
+    response = await chosen.forward_chat(body, body.model, api_key)
+    return chosen, response
+
+
+async def _handle_paid_lane(
+    request: Request,
+    body: ChatRequest,
+    *,
+    cfg,
+    ctx: FailoverContext,
+) -> JSONResponse:
+    """Verify+settle PAYMENT-SIGNATURE then call paid OpenRouter upstream."""
+    raw = extract_payment_header(request.headers)
+    if not raw:
+        raise RuntimeError("paid lane invoked without payment header")
+
+    try:
+        payment_payload = decode_payment_payload(raw)
+    except X402Error as e:
+        resp = await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            error=f"Invalid PAYMENT-SIGNATURE: {e.message}",
+        )
+        return resp
+
+    fee_payer = await resolve_fee_payer(cfg)
+    payment_required = build_payment_required(
+        cfg, resource_url=str(request.url), fee_payer=fee_payer
+    )
+    # Prefer requirements embedded in payload.accepted when present.
+    accepted = payment_payload.get("accepted")
+    if isinstance(accepted, dict) and accepted.get("payTo"):
+        payment_requirements = accepted
+    else:
+        payment_requirements = payment_requirements_from_required(payment_required)
+
+    try:
+        settlement = await verify_and_settle(
+            cfg,
+            payment_payload=payment_payload,
+            payment_requirements=payment_requirements,
+        )
+    except X402Error as e:
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="x402_payment_failed",
+            error=e.message[:200],
+        )
+        return await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            free_detail={"payment_error": e.message, "detail": e.detail},
+            error=e.message,
+        )
+
+    api_key = paid_openrouter_key(cfg)
+    if not api_key:
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="x402_no_paid_key",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "x402_no_paid_upstream_key",
+                    "message": (
+                        "Payment settled, but no paid OpenRouter key is configured. "
+                        "Set FREERIDE_X402_PAID_OPENROUTER_API_KEY (or OPENROUTER_API_KEY)."
+                    ),
+                    "request_id": ctx.request_id,
+                }
+            },
+        )
+
+    if body.is_streaming():
+        # MVP: paid lane is non-streaming for demo reliability.
+        body.stream = False
+
+    try:
+        chosen_provider, response = await _paid_openrouter_chat(
+            request, body, api_key=api_key
+        )
+    except Exception as e:
+        logger.warning("paid OpenRouter forward failed after settle: %s", e)
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="x402_paid_upstream_failed",
+            error=str(e)[:200],
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": {
+                    "type": "x402_paid_upstream_failed",
+                    "message": f"Paid upstream failed after settlement: {e}",
+                    "request_id": ctx.request_id,
+                    "settlement": settlement,
+                }
+            },
+        ) from e
+
+    from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
+
+    usage = extract_usage(Kind.OPENAI, response.model_dump())
+    emit_event(
+        "request_complete",
+        request_id=ctx.request_id,
+        provider=chosen_provider.name,
+        streaming=False,
+        paid=True,
+        input_tokens=usage.input,
+        output_tokens=usage.output,
+    )
+    record_request(
+        input_tokens=usage.input,
+        output_tokens=usage.output,
+        provider=chosen_provider.name,
+    )
+    out = response.model_dump(exclude_none=False)
+    out["_freeride_provider"] = chosen_provider.name
+    out["_freeride_request_id"] = ctx.request_id
+    out["_freeride_paid"] = "hedera-x402"
+    json_resp = JSONResponse(
+        content=out,
+        headers={
+            "X-FreeRide-Provider": chosen_provider.name,
+            "X-FreeRide-Request-ID": ctx.request_id,
+        },
+    )
+    return attach_payment_response(json_resp, settlement)
 
 
 def _format_sse(event: ChatStreamEvent) -> bytes:
@@ -153,6 +342,27 @@ async def chat_completions(request: Request, body: ChatRequest):
         streaming=body.is_streaming(),
     )
 
+    x402_cfg = load_x402_config()
+    payment_hdr = extract_payment_header(request.headers)
+    if payment_hdr and x402_cfg.enabled:
+        if not x402_cfg.pay_to:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "x402_misconfigured",
+                        "message": (
+                            "x402 enabled and payment presented, but "
+                            "FREERIDE_X402_PAY_TO is not set."
+                        ),
+                        "request_id": ctx.request_id,
+                    }
+                },
+            )
+        return await _handle_paid_lane(
+            request, body, cfg=x402_cfg, ctx=ctx
+        )
+
     if not providers:
         emit_event("request_failed", request_id=ctx.request_id, phase="no_providers")
         raise HTTPException(
@@ -175,21 +385,22 @@ async def chat_completions(request: Request, body: ChatRequest):
             phase="no_usable_keys",
             providers=[p.name for p in providers],
         )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": {
-                    "type": "no_usable_keys",
-                    "message": "No providers have usable (non-cooling) API keys for this request.",
-                    "request_id": ctx.request_id,
-                    "configured_providers": [p.name for p in providers],
-                    "suggestion": (
-                        "Either set a provider env var (e.g. OPENROUTER_API_KEY) "
-                        "or wait for cooldowns to expire."
-                    ),
-                }
-            },
-        )
+        detail = {
+            "error": {
+                "type": "no_usable_keys",
+                "message": "No providers have usable (non-cooling) API keys for this request.",
+                "request_id": ctx.request_id,
+                "configured_providers": [p.name for p in providers],
+                "suggestion": (
+                    "Either set a provider env var (e.g. OPENROUTER_API_KEY) "
+                    "or wait for cooldowns to expire."
+                ),
+            }
+        }
+        maybe = await _maybe_402(x402_cfg, request=request, free_detail=detail)
+        if maybe is not None:
+            return maybe
+        raise HTTPException(status_code=503, detail=detail)
 
     if is_auto_model(body.model):
         catalog = await get_or_fetch_catalog(providers, group=True)
@@ -220,7 +431,17 @@ async def chat_completions(request: Request, body: ChatRequest):
         )
 
     if body.is_streaming():
-        return await _build_stream_response(chain, body, cooldown, ctx)
+        try:
+            return await _build_stream_response(chain, body, cooldown, ctx)
+        except HTTPException as he:
+            if he.status_code == 503 and x402_cfg.ready:
+                free_detail = he.detail if isinstance(he.detail, dict) else {"error": he.detail}
+                maybe = await _maybe_402(
+                    x402_cfg, request=request, free_detail=free_detail
+                )
+                if maybe is not None:
+                    return maybe
+            raise
 
     chosen_provider, response = await try_call_with_failover(
         chain,
@@ -238,7 +459,11 @@ async def chat_completions(request: Request, body: ChatRequest):
             phase="all_attempts_exhausted",
             tried=[t.provider for t in ctx.tried],
         )
-        return JSONResponse(status_code=503, content=build_503_detail(ctx))
+        detail = build_503_detail(ctx)
+        maybe = await _maybe_402(x402_cfg, request=request, free_detail=detail)
+        if maybe is not None:
+            return maybe
+        return JSONResponse(status_code=503, content=detail)
 
     from freeride.core.telemetry import record_request
     from freeride.core.usage import Kind, extract_usage
