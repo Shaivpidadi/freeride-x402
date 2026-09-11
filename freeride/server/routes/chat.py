@@ -89,7 +89,23 @@ async def _maybe_402(
         return None
     resource_url = str(request.url)
 
-    if body is not None and ctx is not None and has_payer_credentials():
+    can_auto_pay = body is not None and ctx is not None and has_payer_credentials()
+    # Never settle a payment we cannot then serve (same guard as the fx route).
+    if can_auto_pay and not paid_openrouter_key(cfg):
+        logger.error(
+            "x402 auto-pay skipped: payer configured but no paid upstream key; "
+            "refusing to settle a payment that cannot be served"
+        )
+        free_detail = {
+            **(free_detail or {}),
+            "auto_pay_error": "no paid upstream key configured; no payment taken",
+        }
+        error = (
+            "Free providers exhausted and the paid lane is misconfigured: set "
+            "FREERIDE_X402_PAID_OPENROUTER_API_KEY (or OPENROUTER_API_KEY). "
+            "No payment was taken."
+        )
+    elif can_auto_pay:
         try:
             _payload, settlement = await auto_pay_settle(cfg, resource_url=resource_url)
             return await _complete_paid_lane(

@@ -397,7 +397,24 @@ async def _fx_maybe_cash_lane(
     """Daemon auto-pay when payer keys exist, else HTTP 402."""
     if not cfg.ready:
         return None
-    if has_payer_credentials():
+    # Never settle a payment we cannot then serve. Without a paid upstream
+    # key the forward fails *after* the HBAR is gone, and the client gets a
+    # 402 telling it to pay again. Check the precondition before settling.
+    if has_payer_credentials() and not paid_openrouter_key(cfg):
+        logger.error(
+            "x402 auto-pay skipped: payer configured but no paid upstream key; "
+            "refusing to settle a payment that cannot be served"
+        )
+        free_detail = {
+            **(free_detail or {}),
+            "auto_pay_error": "no paid upstream key configured; no payment taken",
+        }
+        error = (
+            "Free providers exhausted and the paid lane is misconfigured: set "
+            "FREERIDE_X402_PAID_OPENROUTER_API_KEY (or OPENROUTER_API_KEY). "
+            "No payment was taken."
+        )
+    elif has_payer_credentials():
         try:
             _payload, settlement = await auto_pay_settle(
                 cfg, resource_url=str(request.url)

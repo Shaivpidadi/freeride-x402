@@ -47,3 +47,7 @@ skills/
 
 # Local CI credentials — never commit
 tests/ci/.env*
+
+# Hedera x402 signer deps (installed via `cd scripts && npm install`)
+scripts/node_modules/
+uv.lock
