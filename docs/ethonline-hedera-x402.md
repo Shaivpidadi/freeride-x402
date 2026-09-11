@@ -4,36 +4,62 @@
 
 FreeRide is still a **free-first** local gateway. Free inference and free-tier failover do not go away.
 
-When free providers/keys **cannot serve** (no usable keys, all attempts exhausted, or stream pre-first-chunk failure), and x402 is enabled, FreeRide offers a **paid cash lane**:
+When free providers/keys **cannot serve** (no usable keys, all attempts exhausted, or stream pre-first-chunk failure), and x402 is enabled, FreeRide offers a **paid cash lane** via Hedera + [Blocky402](https://blocky402.com).
 
-1. Respond **402** with header `PAYMENT-REQUIRED` = base64(JSON PaymentRequired) for **Hedera testnet** `exact` scheme.
-2. Client pays (signs) and retries with `PAYMENT-SIGNATURE` (legacy `X-PAYMENT` also accepted).
-3. Gateway **verify + settle** via [Blocky402](https://blocky402.com) facilitator `https://api.testnet.blocky402.com`.
-4. On success, forward once via **paid OpenRouter** key and return `PAYMENT-RESPONSE`.
+### Seamless path (primary UX — ridex)
 
-This is **not** a BlockRun-style paid catalog. It is an optional cash escape hatch when free dies.
+If payer credentials are in `~/.freeride/.env`, the **daemon auto-pays**:
+
+1. Free exhausts on chat **or fx** (`POST /v3/ai/language-model`).
+2. Gateway signs with local payer key (`scripts/x402_hedera_sign.mjs` / `@x402/hedera`).
+3. Blocky402 `/verify` + `/settle`.
+4. Paid OpenRouter serves the request.
+5. Response includes `PAYMENT-RESPONSE` + `X-FreeRide-Lane: paid`.
+6. Client (ridex) sees a normal success — no crypto UI.
+
+### Classic 402 path (no payer key)
+
+1. Respond **402** with `PAYMENT-REQUIRED`.
+2. Client signs and retries with `PAYMENT-SIGNATURE`.
+3. Same verify/settle → paid OpenRouter.
 
 ```
 ┌─────────┐   free     ┌──────────────┐   free keys    ┌─────────────┐
-│  Agent  │ ─────────► │ FreeRide     │ ─────────────► │ OpenRouter/ │
-│         │            │ /v1/chat/…   │                │ Groq/NIM/…  │
+│  ridex  │ ─────────► │ FreeRide     │ ─────────────► │ OpenRouter/ │
+│ / agent │            │ chat + fx    │                │ Groq/NIM/…  │
 └─────────┘            └──────┬───────┘                └─────────────┘
                               │ free exhausted + x402 on
                               ▼
-                       402 PAYMENT-REQUIRED
-                              │
-                              ▼
-                       Agent signs Hedera exact
-                              │
-                              ▼
-                       PAYMENT-SIGNATURE retry
-                              │
-                              ▼
-                       Blocky402 /verify + /settle
-                              │
-                              ▼
-                       Paid OpenRouter → 200 + PAYMENT-RESPONSE
+                    payer in ~/.freeride/.env?
+                     /                    \
+                   yes                     no
+                    │                       │
+                    ▼                       ▼
+            auto-sign + settle        402 PAYMENT-REQUIRED
+                    │                       │
+                    ▼                       ▼
+            paid OpenRouter           client signs + retry
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+                     200 + PAYMENT-RESPONSE
+                     X-FreeRide-Lane: paid
 ```
+
+## Wallet CLI
+
+```bash
+freeride wallet status   # enabled, pay_to, payer set?, dry_run (never prints key)
+freeride wallet setup    # account id + ECDSA key + pay_to → ~/.freeride/.env
+freeride doctor          # includes an x402/wallet line when relevant
+```
+
+Aliases accepted for payer env:
+
+| Preferred | Also accepted |
+|-----------|---------------|
+| `FREERIDE_X402_PAYER_ACCOUNT` | `HEDERA_ACCOUNT_ID` |
+| `FREERIDE_X402_PAYER_KEY` | `HEDERA_PRIVATE_KEY` |
 
 ## x402 v2 HTTP wire
 
@@ -42,14 +68,7 @@ This is **not** a BlockRun-style paid catalog. It is an optional cash escape hat
 | Server challenge | `PAYMENT-REQUIRED` | base64(JSON PaymentRequired) |
 | Client payment | `PAYMENT-SIGNATURE` | base64(JSON PaymentPayload) (also `X-PAYMENT`) |
 | Server settlement | `PAYMENT-RESPONSE` | base64(JSON SettlementResponse) |
-
-Facilitator body for verify/settle:
-
-```json
-{ "x402Version": 2, "paymentPayload": {…}, "paymentRequirements": {…} }
-```
-
-`GET /supported` advertises `hedera:testnet` with feePayer `0.0.7162784` (override with env if needed).
+| Lane marker | `X-FreeRide-Lane` | `paid` on successful cash-lane responses |
 
 ## Environment
 
@@ -57,6 +76,8 @@ Facilitator body for verify/settle:
 |----------|----------|---------|---------|
 | `FREERIDE_X402_ENABLED` | to enable | off | Set `1` to enable cash lane |
 | `FREERIDE_X402_PAY_TO` | when enabled | — | Hedera account receiving payment |
+| `FREERIDE_X402_PAYER_ACCOUNT` | for auto-pay | — | Local payer account |
+| `FREERIDE_X402_PAYER_KEY` | for auto-pay | — | ECDSA private key (never logged) |
 | `FREERIDE_X402_NETWORK` | no | `hedera:testnet` | CAIP-2 network |
 | `FREERIDE_X402_AMOUNT` | no | `100000` | tinybars (0.001 HBAR) |
 | `FREERIDE_X402_ASSET` | no | `0.0.0` | HBAR |
@@ -64,63 +85,77 @@ Facilitator body for verify/settle:
 | `FREERIDE_X402_FEE_PAYER` | no | from `/supported` | Facilitator co-signer |
 | `FREERIDE_X402_RESOURCE_URL` | no | request URL | Resource.url in challenge |
 | `FREERIDE_X402_PAID_OPENROUTER_API_KEY` | for paid inference | falls back to `OPENROUTER_API_KEY` | Upstream after settle |
-| `FREERIDE_X402_DRY_RUN` | no | off | **Demo/tests only**: skip real verify/settle; still requires `PAYMENT-SIGNATURE`; returns fake settlement |
+| `FREERIDE_X402_DRY_RUN` | no | off | Skip real verify/settle; stub signer without Node |
 
 ### Dry-run warning
 
 `FREERIDE_X402_DRY_RUN=1` is for **unit tests and local demos without a wallet**. It does **not** move HBAR. Never enable in a public deployment that should collect real payment.
 
+## Signing helper
+
+Live auto-pay shells out to:
+
+```bash
+cd scripts && npm install   # once: @x402/hedera
+# Python feeds paymentRequirements JSON on stdin → PaymentPayload on stdout
+node scripts/x402_hedera_sign.mjs
+```
+
+Requires Node 18+. Dry-run skips Node entirely.
+
 ## Code map
 
-- `freeride/core/x402_hedera.py` — config, PaymentRequired, facilitator client, 402 helpers
-- `freeride/server/routes/chat.py` — free failover; on exhaust → 402; on payment header → verify/settle → paid OpenRouter
-- `examples/ethonline-hedera-agent/` — Node demo consumer
+- `freeride/core/x402_hedera.py` — config, PaymentRequired, facilitator, auto-pay sign/settle
+- `freeride/server/routes/chat.py` — free failover → auto-pay or 402 → paid OpenRouter
+- `freeride/server/routes/fx.py` — same cash lane for ridex (`/v3/ai/language-model`)
+- `freeride/cli/cmd_wallet.py` — `freeride wallet status|setup`
+- `scripts/x402_hedera_sign.mjs` — ExactHederaScheme signer
+- `examples/ethonline-hedera-agent/` — Node demo consumer (classic 402 client path)
 - `tests/test_x402_hedera.py` — hermetic pytest
+
+## Streaming limitation (MVP)
+
+- **Chat**: paid lane forces non-streaming completion.
+- **fx**: if payment is needed **before** the first chunk (no usable keys / payment-upfront / non-stream exhaustion), auto-pay runs, then:
+  - non-stream clients get JSON;
+  - stream clients get a **one-shot SSE wrap** of the paid completion (so ridex keeps working).
+- If free streaming already shipped headers/chunks and then dies mid-stream, HTTP 402 is no longer possible (same as other mid-stream limits). Prefer auto-pay on the next turn.
 
 ## Demo script (judges)
 
-### A. Dry-run (no wallet)
-
-Terminal 1 — gateway:
+### A. Dry-run auto-pay (seamless)
 
 ```bash
 export FREERIDE_X402_ENABLED=1
-export FREERIDE_X402_PAY_TO=0.0.8011510   # any valid-looking id for challenge
+export FREERIDE_X402_PAY_TO=0.0.8011510
+export FREERIDE_X402_PAYER_ACCOUNT=0.0.dry
+export FREERIDE_X402_PAYER_KEY=dry-run-not-used
 export FREERIDE_X402_DRY_RUN=1
 export FREERIDE_X402_PAID_OPENROUTER_API_KEY=sk-or-v1-...
-# Optionally unset free keys to force 402 immediately:
+# unset free keys to force cash lane:
 # unset OPENROUTER_API_KEY GROQ_API_KEY …
-freeride serve   # or your usual serve command
+freeride serve
 ```
 
-Terminal 2 — agent:
+A chat or fx request should return **200** with `X-FreeRide-Lane: paid` (not 402).
 
-```bash
-cd examples/ethonline-hedera-agent
-npm install
-export FREERIDE_URL=http://127.0.0.1:11343
-export FREERIDE_X402_AGENT_DRY_RUN=1
-npm start
-```
+### B. Classic 402 (no payer)
 
-### B. Live Hedera testnet
+Same as A but **without** payer env → HTTP 402 + `PAYMENT-REQUIRED`, then use `examples/ethonline-hedera-agent`.
 
-1. Fund a testnet account (HBAR faucet).
-2. Set gateway `FREERIDE_X402_PAY_TO` to **your** receiver account; leave `DRY_RUN` unset.
-3. Set agent `HEDERA_ACCOUNT_ID` + `HEDERA_PRIVATE_KEY`.
-4. Exhaust free keys (or unset them) so the first call gets 402, then agent signs and settles via Blocky402.
+### C. Live Hedera testnet
+
+1. `freeride wallet setup` (payer + pay_to).
+2. `cd scripts && npm install`.
+3. Leave `DRY_RUN` unset; fund payer with testnet HBAR.
+4. Exhaust free keys → daemon auto-pays via Blocky402.
 
 ## Judge checklist
 
 - [ ] Free path still works when free keys are healthy (no payment).
-- [ ] Free exhaustion + x402 on → HTTP 402 + `PAYMENT-REQUIRED` (not a silent paid redirect).
-- [ ] Payment retry → verify/settle → paid inference + `PAYMENT-RESPONSE`.
+- [ ] Free exhaustion + x402 on + **payer set** → auto-pay → 200 + `X-FreeRide-Lane: paid`.
+- [ ] Free exhaustion + x402 on + **no payer** → HTTP 402 + `PAYMENT-REQUIRED`.
+- [ ] fx dialect (`/v3/ai/language-model`) shares the same cash lane.
+- [ ] `freeride wallet status|setup` works; doctor mentions x402 when enabled.
 - [ ] Facilitator = Blocky402 testnet; scheme `exact`; network `hedera:testnet`.
-- [ ] Product docs still describe FreeRide as free-first (paid = cash lane only).
 - [ ] `FREERIDE_X402_DRY_RUN` documented as non-production.
-
-## Blockers / live settle notes
-
-- Live settle needs a real Hedera **payTo** account you control and a funded **payer** for the agent.
-- Paid upstream needs a working OpenRouter key with credit (`FREERIDE_X402_PAID_OPENROUTER_API_KEY`).
-- MVP paid path is **non-streaming** chat completions only.

@@ -249,6 +249,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_keys.add_argument("--no-color", action="store_true")
 
+    p_wallet = sub.add_parser(
+        "wallet",
+        help="Hedera x402 cash-lane wallet (status / setup)",
+    )
+    wallet_sub = p_wallet.add_subparsers(dest="wallet_command")
+    wallet_sub.add_parser("status", help="Show x402/wallet config (never prints keys)")
+    p_wsetup = wallet_sub.add_parser(
+        "setup",
+        help="Interactive Hedera payer + pay_to setup into ~/.freeride/.env",
+    )
+    p_wsetup.add_argument(
+        "--out",
+        default=None,
+        help="Where to write the .env file (default: ~/.freeride/.env)",
+    )
+
     return parser
 
 
@@ -344,6 +360,11 @@ def main(argv: list[str] | None = None) -> int:
         from freeride.cli.cmd_keys import cmd_keys
 
         return cmd_keys(args)
+
+    if args.command == "wallet":
+        from freeride.cli.cmd_wallet import cmd_wallet
+
+        return cmd_wallet(args)
 
     parser.print_help()
     return 1

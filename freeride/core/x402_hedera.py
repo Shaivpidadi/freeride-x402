@@ -19,6 +19,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -267,6 +268,7 @@ def attach_payment_response(
     """Attach PAYMENT-RESPONSE header to a successful paid-lane response."""
     response.headers[HEADER_PAYMENT_RESPONSE] = encode_settlement_response(settlement)
     response.headers["X-FreeRide-Paid"] = "hedera-x402"
+    response.headers["X-FreeRide-Lane"] = "paid"
     return response
 
 
@@ -361,3 +363,130 @@ def _safe_json(resp: httpx.Response) -> Any:
 
 def paid_openrouter_key(cfg: X402Config) -> str | None:
     return cfg.paid_openrouter_api_key
+
+
+# ---------------------------------------------------------------------------
+# Daemon-side auto-pay (payer keys live in ~/.freeride/.env)
+# ---------------------------------------------------------------------------
+
+
+def load_payer_credentials() -> tuple[str | None, str | None]:
+    """Return (account_id, private_key) from env aliases.
+
+    Preferred: ``FREERIDE_X402_PAYER_ACCOUNT`` / ``FREERIDE_X402_PAYER_KEY``.
+    Also accepts ``HEDERA_ACCOUNT_ID`` / ``HEDERA_PRIVATE_KEY``.
+    """
+    account = (
+        os.environ.get("FREERIDE_X402_PAYER_ACCOUNT", "").strip()
+        or os.environ.get("HEDERA_ACCOUNT_ID", "").strip()
+        or None
+    )
+    key = (
+        os.environ.get("FREERIDE_X402_PAYER_KEY", "").strip()
+        or os.environ.get("HEDERA_PRIVATE_KEY", "").strip()
+        or None
+    )
+    return account, key
+
+
+def has_payer_credentials() -> bool:
+    account, key = load_payer_credentials()
+    return bool(account and key)
+
+
+def _signer_script_path() -> Path:
+    # freeride/core/x402_hedera.py → repo root scripts/
+    return Path(__file__).resolve().parents[2] / "scripts" / "x402_hedera_sign.mjs"
+
+
+def create_signed_payment_payload(
+    payment_requirements: dict[str, Any],
+    *,
+    cfg: X402Config,
+) -> dict[str, Any]:
+    """Build a PaymentPayload for ``payment_requirements``.
+
+    ``FREERIDE_X402_DRY_RUN=1`` returns a stub without Node. Live mode
+    shells out to ``scripts/x402_hedera_sign.mjs`` (stdin JSON → stdout JSON).
+    """
+    if cfg.dry_run:
+        account, _ = load_payer_credentials()
+        return {
+            "x402Version": 2,
+            "scheme": payment_requirements.get("scheme") or "exact",
+            "network": payment_requirements.get("network") or cfg.network,
+            "accepted": payment_requirements,
+            "payload": {"transaction": "daemon-auto-pay-dry-run"},
+            "payer": account or "0.0.dry-run",
+        }
+
+    account, key = load_payer_credentials()
+    if not account or not key:
+        raise X402Error(
+            "Auto-pay needs FREERIDE_X402_PAYER_ACCOUNT + FREERIDE_X402_PAYER_KEY "
+            "(or HEDERA_ACCOUNT_ID + HEDERA_PRIVATE_KEY)"
+        )
+
+    script = _signer_script_path()
+    if not script.is_file():
+        raise X402Error(f"Missing Hedera signer helper: {script}")
+
+    import subprocess
+
+    env = os.environ.copy()
+    env["HEDERA_ACCOUNT_ID"] = account
+    env["HEDERA_PRIVATE_KEY"] = key
+    # Prefer FREERIDE aliases too for the Node helper.
+    env["FREERIDE_X402_PAYER_ACCOUNT"] = account
+    env["FREERIDE_X402_PAYER_KEY"] = key
+
+    try:
+        proc = subprocess.run(
+            ["node", str(script)],
+            input=json.dumps(payment_requirements).encode("utf-8"),
+            capture_output=True,
+            timeout=60,
+            env=env,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise X402Error(
+            "Node.js is required for live Hedera auto-pay. "
+            "Install Node 18+ or set FREERIDE_X402_DRY_RUN=1 for demos."
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise X402Error("Hedera signer timed out") from e
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace")[:500]
+        raise X402Error(f"Hedera signer failed: {err or f'exit {proc.returncode}'}")
+
+    try:
+        payload = json.loads(proc.stdout.decode("utf-8"))
+    except Exception as e:
+        raise X402Error(f"Hedera signer returned invalid JSON: {e}") from e
+    if not isinstance(payload, dict):
+        raise X402Error("Hedera signer must return a JSON object")
+    return payload
+
+
+async def auto_pay_settle(
+    cfg: X402Config,
+    *,
+    resource_url: str,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Sign (daemon-side) + verify + settle. Returns (payment_payload, settlement)."""
+    fee_payer = await resolve_fee_payer(cfg, client=client)
+    payment_required = build_payment_required(
+        cfg, resource_url=resource_url, fee_payer=fee_payer
+    )
+    payment_requirements = payment_requirements_from_required(payment_required)
+    payment_payload = create_signed_payment_payload(payment_requirements, cfg=cfg)
+    settlement = await verify_and_settle(
+        cfg,
+        payment_payload=payment_payload,
+        payment_requirements=payment_requirements,
+        client=client,
+    )
+    return payment_payload, settlement

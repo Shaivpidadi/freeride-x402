@@ -53,6 +53,23 @@ from freeride.core.failover import (
     try_call_with_failover,
     try_stream_with_failover,
 )
+from freeride.core.x402_hedera import (
+    HEADER_PAYMENT_RESPONSE,
+    X402Error,
+    attach_payment_response,
+    auto_pay_settle,
+    build_402_response,
+    decode_payment_payload,
+    encode_settlement_response,
+    extract_payment_header,
+    has_payer_credentials,
+    load_x402_config,
+    paid_openrouter_key,
+    payment_requirements_from_required,
+    build_payment_required,
+    resolve_fee_payer,
+    verify_and_settle,
+)
 from freeride.core.fx_schema import (
     FX_MODEL_HEADER,
     FX_STREAMING_HEADER,
@@ -162,6 +179,255 @@ def _error_payload(message: str, code: str = "invalid_request_error") -> dict:
     """fx's failure diagnostics read ``error.message`` when present and
     otherwise show the raw body; OpenAI's envelope covers both."""
     return {"error": {"message": message, "type": code}}
+
+
+def _fx_free_detail(message: str, code: str = "service_unavailable") -> dict:
+    return _error_payload(message, code)
+
+
+async def _fx_paid_openrouter(
+    request: Request,
+    openai_request,
+    *,
+    api_key: str,
+):
+    """One-shot paid OpenRouter forward (non-streaming)."""
+    from freeride.providers.openrouter import OpenRouterProvider
+
+    providers: list[Provider] = list(request.app.state.providers)
+    chosen = next((p for p in providers if p.name == "openrouter"), None)
+    if chosen is None:
+        chosen = OpenRouterProvider()
+    # Paid MVP is always non-streaming completion.
+    openai_request.stream = False
+    response = await chosen.forward_chat(openai_request, openai_request.model, api_key)
+    return chosen, response
+
+
+async def _fx_complete_paid(
+    request: Request,
+    openai_request,
+    *,
+    cfg,
+    ctx: FailoverContext,
+    settlement: dict,
+    want_stream: bool,
+):
+    """Serve paid OpenRouter after settle. Streaming clients get a short SSE wrap."""
+    api_key = paid_openrouter_key(cfg)
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail=_error_payload(
+                "Payment settled, but no paid OpenRouter key is configured. "
+                "Set FREERIDE_X402_PAID_OPENROUTER_API_KEY (or OPENROUTER_API_KEY).",
+                "x402_no_paid_upstream_key",
+            ),
+        )
+
+    try:
+        chosen_provider, response_obj = await _fx_paid_openrouter(
+            request, openai_request, api_key=api_key
+        )
+    except Exception as e:
+        logger.warning("fx paid OpenRouter forward failed after settle: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail=_error_payload(
+                f"Paid upstream failed after settlement: {e}",
+                "x402_paid_upstream_failed",
+            ),
+        ) from e
+
+    from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
+
+    usage = extract_usage(Kind.OPENAI, response_obj.model_dump())
+    emit_event(
+        "request_complete",
+        request_id=ctx.request_id,
+        provider=chosen_provider.name,
+        streaming=False,
+        paid=True,
+        endpoint="fx",
+        input_tokens=usage.input,
+        output_tokens=usage.output,
+    )
+    record_request(
+        input_tokens=usage.input,
+        output_tokens=usage.output,
+        provider=chosen_provider.name,
+        model=openai_request.model,
+    )
+
+    pay_hdr = encode_settlement_response(settlement)
+    common_headers = {
+        "X-FreeRide-Provider": chosen_provider.name,
+        "X-FreeRide-Request-Id": ctx.request_id,
+        "X-FreeRide-Paid": "hedera-x402",
+        "X-FreeRide-Lane": "paid",
+        HEADER_PAYMENT_RESPONSE: pay_hdr,
+    }
+
+    if want_stream:
+        # MVP: paid inference is a completion; wrap as a one-shot fx SSE
+        # so ridex streaming clients keep working without crypto awareness.
+        from freeride.core.fx_translate import _sse, finish_reason_to_unified
+
+        body = response_obj.model_dump(exclude_none=True)
+        content = ""
+        tool_calls = []
+        finish_reason = "stop"
+        choices = body.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            content = msg.get("content") or ""
+            tool_calls = msg.get("tool_calls") or []
+            finish_reason = choices[0].get("finish_reason") or "stop"
+
+        async def _emit() -> AsyncIterator[bytes]:
+            yield _sse({"type": "response-metadata", "modelId": openai_request.model})
+            if content:
+                yield _sse({"type": "text-delta", "id": "answer_1", "delta": content})
+            for i, tc in enumerate(tool_calls):
+                fn = tc.get("function") or {}
+                args_raw = fn.get("arguments") or "{}"
+                try:
+                    args_obj = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                except Exception:
+                    args_obj = args_raw
+                yield _sse(
+                    {
+                        "type": "tool-call",
+                        "toolCallId": tc.get("id") or f"paid_tc_{i}",
+                        "toolName": fn.get("name") or "unknown",
+                        "input": args_obj,
+                    }
+                )
+            unified = finish_reason_to_unified(
+                finish_reason, has_tool_calls=bool(tool_calls)
+            )
+            yield _sse(
+                {
+                    "type": "finish",
+                    "finishReason": {"unified": unified, "raw": finish_reason},
+                    "usage": {
+                        "inputTokens": {"total": int(usage.input)},
+                        "outputTokens": {"total": int(usage.output)},
+                    },
+                }
+            )
+            yield b"data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _emit(),
+            media_type="text/event-stream",
+            headers=common_headers,
+        )
+
+    json_resp = JSONResponse(
+        content=response_obj.model_dump(exclude_none=True),
+        headers=common_headers,
+    )
+    # attach_payment_response also sets lane headers (idempotent overwrite)
+    return attach_payment_response(json_resp, settlement)
+
+
+async def _fx_handle_payment_header(
+    request: Request,
+    openai_request,
+    *,
+    cfg,
+    ctx: FailoverContext,
+    want_stream: bool,
+):
+    raw = extract_payment_header(request.headers)
+    if not raw:
+        raise RuntimeError("paid lane invoked without payment header")
+    try:
+        payment_payload = decode_payment_payload(raw)
+    except X402Error as e:
+        return await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            error=f"Invalid PAYMENT-SIGNATURE: {e.message}",
+        )
+    fee_payer = await resolve_fee_payer(cfg)
+    payment_required = build_payment_required(
+        cfg, resource_url=str(request.url), fee_payer=fee_payer
+    )
+    accepted = payment_payload.get("accepted")
+    if isinstance(accepted, dict) and accepted.get("payTo"):
+        payment_requirements = accepted
+    else:
+        payment_requirements = payment_requirements_from_required(payment_required)
+    try:
+        settlement = await verify_and_settle(
+            cfg,
+            payment_payload=payment_payload,
+            payment_requirements=payment_requirements,
+        )
+    except X402Error as e:
+        return await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            free_detail={"payment_error": e.message, "detail": e.detail},
+            error=e.message,
+        )
+    return await _fx_complete_paid(
+        request,
+        openai_request,
+        cfg=cfg,
+        ctx=ctx,
+        settlement=settlement,
+        want_stream=want_stream,
+    )
+
+
+async def _fx_maybe_cash_lane(
+    cfg,
+    *,
+    request: Request,
+    openai_request,
+    ctx: FailoverContext,
+    free_detail: dict,
+    want_stream: bool,
+    error: str = "Free providers exhausted; pay for premium inference",
+):
+    """Daemon auto-pay when payer keys exist, else HTTP 402."""
+    if not cfg.ready:
+        return None
+    if has_payer_credentials():
+        try:
+            _payload, settlement = await auto_pay_settle(
+                cfg, resource_url=str(request.url)
+            )
+            return await _fx_complete_paid(
+                request,
+                openai_request,
+                cfg=cfg,
+                ctx=ctx,
+                settlement=settlement,
+                want_stream=want_stream,
+            )
+        except X402Error as e:
+            logger.warning("fx x402 auto-pay failed, falling back to 402: %s", e.message)
+            free_detail = {
+                **(free_detail or {}),
+                "auto_pay_error": e.message,
+                "detail": e.detail,
+            }
+            error = f"Auto-pay failed: {e.message}"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fx x402 auto-pay unexpected error: %s", e)
+            free_detail = {**(free_detail or {}), "auto_pay_error": str(e)[:300]}
+            error = f"Auto-pay failed: {e}"
+    return await build_402_response(
+        cfg,
+        resource_url=str(request.url),
+        free_detail=free_detail,
+        error=error,
+    )
 
 
 def _agent_pin() -> tuple[str, str]:
@@ -374,6 +640,25 @@ async def fx_chat(request: Request):
         endpoint="fx",
     )
 
+    x402_cfg = load_x402_config()
+    payment_hdr = extract_payment_header(request.headers)
+    if payment_hdr and x402_cfg.enabled:
+        if not x402_cfg.pay_to:
+            raise HTTPException(
+                status_code=503,
+                detail=_error_payload(
+                    "x402 enabled and payment presented, but FREERIDE_X402_PAY_TO is not set.",
+                    "x402_misconfigured",
+                ),
+            )
+        return await _fx_handle_payment_header(
+            request,
+            openai_request,
+            cfg=x402_cfg,
+            ctx=ctx,
+            want_stream=is_streaming,
+        )
+
     if not providers:
         raise HTTPException(
             status_code=503,
@@ -385,14 +670,22 @@ async def fx_chat(request: Request):
     cooldown = KeyCooldown()
     chain = resolve_provider_chain(providers)
     if not chain:
-        raise HTTPException(
-            status_code=503,
-            detail=_error_payload(
-                "No providers have usable (non-cooling) API keys for this request. "
-                "Run `freeride init` to configure keys.",
-                "service_unavailable",
-            ),
+        detail = _fx_free_detail(
+            "No providers have usable (non-cooling) API keys for this request. "
+            "Run `freeride init` to configure keys, or `freeride wallet setup` "
+            "for the Hedera cash lane.",
         )
+        maybe = await _fx_maybe_cash_lane(
+            x402_cfg,
+            request=request,
+            openai_request=openai_request,
+            ctx=ctx,
+            free_detail=detail,
+            want_stream=is_streaming,
+        )
+        if maybe is not None:
+            return maybe
+        raise HTTPException(status_code=503, detail=detail)
 
     if is_auto_model(openai_request.model):
         catalog = await get_or_fetch_catalog(auto_resolution_providers, group=True)
@@ -461,13 +754,20 @@ async def fx_chat(request: Request):
         await _record_candidate_failure_async(scoped_chain, cand_model)
 
     if response_obj is None:
-        raise HTTPException(
-            status_code=503,
-            detail=_error_payload(
-                "All providers exhausted without a successful response.",
-                "service_unavailable",
-            ),
+        detail = _fx_free_detail(
+            "All providers exhausted without a successful response.",
         )
+        maybe = await _fx_maybe_cash_lane(
+            x402_cfg,
+            request=request,
+            openai_request=openai_request,
+            ctx=ctx,
+            free_detail=detail,
+            want_stream=False,
+        )
+        if maybe is not None:
+            return maybe
+        raise HTTPException(status_code=503, detail=detail)
 
     emit_event(
         "request_complete",

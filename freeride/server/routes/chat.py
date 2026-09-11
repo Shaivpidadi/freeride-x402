@@ -39,9 +39,11 @@ from freeride.core.provider_env import env_var_for
 from freeride.core.x402_hedera import (
     X402Error,
     attach_payment_response,
+    auto_pay_settle,
     build_402_response,
     decode_payment_payload,
     extract_payment_header,
+    has_payer_credentials,
     load_x402_config,
     paid_openrouter_key,
     payment_requirements_from_required,
@@ -74,11 +76,42 @@ async def _maybe_402(
     request: Request,
     free_detail: dict,
     error: str = "Free providers exhausted; pay for premium inference",
+    body: ChatRequest | None = None,
+    ctx: FailoverContext | None = None,
 ) -> JSONResponse | None:
-    """Return a 402 PaymentRequired response when x402 cash lane is ready."""
+    """On free exhaustion: daemon auto-pay when payer keys exist, else 402.
+
+    Primary UX for ridex: payer credentials in ``~/.freeride/.env`` mean the
+    gateway signs + settles and returns a successful paid response so the
+    client never sees crypto. Without payer keys, return classic 402.
+    """
     if not cfg.ready:
         return None
     resource_url = str(request.url)
+
+    if body is not None and ctx is not None and has_payer_credentials():
+        try:
+            _payload, settlement = await auto_pay_settle(cfg, resource_url=resource_url)
+            return await _complete_paid_lane(
+                request,
+                body,
+                cfg=cfg,
+                ctx=ctx,
+                settlement=settlement,
+            )
+        except X402Error as e:
+            logger.warning("x402 auto-pay failed, falling back to 402: %s", e.message)
+            free_detail = {
+                **(free_detail or {}),
+                "auto_pay_error": e.message,
+                "detail": e.detail,
+            }
+            error = f"Auto-pay failed: {e.message}"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("x402 auto-pay unexpected error, falling back to 402: %s", e)
+            free_detail = {**(free_detail or {}), "auto_pay_error": str(e)[:300]}
+            error = f"Auto-pay failed: {e}"
+
     return await build_402_response(
         cfg,
         resource_url=resource_url,
@@ -109,59 +142,15 @@ async def _paid_openrouter_chat(
     return chosen, response
 
 
-async def _handle_paid_lane(
+async def _complete_paid_lane(
     request: Request,
     body: ChatRequest,
     *,
     cfg,
     ctx: FailoverContext,
+    settlement: dict,
 ) -> JSONResponse:
-    """Verify+settle PAYMENT-SIGNATURE then call paid OpenRouter upstream."""
-    raw = extract_payment_header(request.headers)
-    if not raw:
-        raise RuntimeError("paid lane invoked without payment header")
-
-    try:
-        payment_payload = decode_payment_payload(raw)
-    except X402Error as e:
-        resp = await build_402_response(
-            cfg,
-            resource_url=str(request.url),
-            error=f"Invalid PAYMENT-SIGNATURE: {e.message}",
-        )
-        return resp
-
-    fee_payer = await resolve_fee_payer(cfg)
-    payment_required = build_payment_required(
-        cfg, resource_url=str(request.url), fee_payer=fee_payer
-    )
-    # Prefer requirements embedded in payload.accepted when present.
-    accepted = payment_payload.get("accepted")
-    if isinstance(accepted, dict) and accepted.get("payTo"):
-        payment_requirements = accepted
-    else:
-        payment_requirements = payment_requirements_from_required(payment_required)
-
-    try:
-        settlement = await verify_and_settle(
-            cfg,
-            payment_payload=payment_payload,
-            payment_requirements=payment_requirements,
-        )
-    except X402Error as e:
-        emit_event(
-            "request_failed",
-            request_id=ctx.request_id,
-            phase="x402_payment_failed",
-            error=e.message[:200],
-        )
-        return await build_402_response(
-            cfg,
-            resource_url=str(request.url),
-            free_detail={"payment_error": e.message, "detail": e.detail},
-            error=e.message,
-        )
-
+    """After settlement: call paid OpenRouter and attach PAYMENT-RESPONSE."""
     api_key = paid_openrouter_key(cfg)
     if not api_key:
         emit_event(
@@ -241,6 +230,64 @@ async def _handle_paid_lane(
         },
     )
     return attach_payment_response(json_resp, settlement)
+
+
+async def _handle_paid_lane(
+    request: Request,
+    body: ChatRequest,
+    *,
+    cfg,
+    ctx: FailoverContext,
+) -> JSONResponse:
+    """Verify+settle PAYMENT-SIGNATURE then call paid OpenRouter upstream."""
+    raw = extract_payment_header(request.headers)
+    if not raw:
+        raise RuntimeError("paid lane invoked without payment header")
+
+    try:
+        payment_payload = decode_payment_payload(raw)
+    except X402Error as e:
+        resp = await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            error=f"Invalid PAYMENT-SIGNATURE: {e.message}",
+        )
+        return resp
+
+    fee_payer = await resolve_fee_payer(cfg)
+    payment_required = build_payment_required(
+        cfg, resource_url=str(request.url), fee_payer=fee_payer
+    )
+    # Prefer requirements embedded in payload.accepted when present.
+    accepted = payment_payload.get("accepted")
+    if isinstance(accepted, dict) and accepted.get("payTo"):
+        payment_requirements = accepted
+    else:
+        payment_requirements = payment_requirements_from_required(payment_required)
+
+    try:
+        settlement = await verify_and_settle(
+            cfg,
+            payment_payload=payment_payload,
+            payment_requirements=payment_requirements,
+        )
+    except X402Error as e:
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="x402_payment_failed",
+            error=e.message[:200],
+        )
+        return await build_402_response(
+            cfg,
+            resource_url=str(request.url),
+            free_detail={"payment_error": e.message, "detail": e.detail},
+            error=e.message,
+        )
+
+    return await _complete_paid_lane(
+        request, body, cfg=cfg, ctx=ctx, settlement=settlement
+    )
 
 
 def _format_sse(event: ChatStreamEvent) -> bytes:
@@ -397,7 +444,9 @@ async def chat_completions(request: Request, body: ChatRequest):
                 ),
             }
         }
-        maybe = await _maybe_402(x402_cfg, request=request, free_detail=detail)
+        maybe = await _maybe_402(
+            x402_cfg, request=request, free_detail=detail, body=body, ctx=ctx
+        )
         if maybe is not None:
             return maybe
         raise HTTPException(status_code=503, detail=detail)
@@ -437,7 +486,11 @@ async def chat_completions(request: Request, body: ChatRequest):
             if he.status_code == 503 and x402_cfg.ready:
                 free_detail = he.detail if isinstance(he.detail, dict) else {"error": he.detail}
                 maybe = await _maybe_402(
-                    x402_cfg, request=request, free_detail=free_detail
+                    x402_cfg,
+                    request=request,
+                    free_detail=free_detail,
+                    body=body,
+                    ctx=ctx,
                 )
                 if maybe is not None:
                     return maybe
@@ -460,7 +513,9 @@ async def chat_completions(request: Request, body: ChatRequest):
             tried=[t.provider for t in ctx.tried],
         )
         detail = build_503_detail(ctx)
-        maybe = await _maybe_402(x402_cfg, request=request, free_detail=detail)
+        maybe = await _maybe_402(
+            x402_cfg, request=request, free_detail=detail, body=body, ctx=ctx
+        )
         if maybe is not None:
             return maybe
         return JSONResponse(status_code=503, content=detail)

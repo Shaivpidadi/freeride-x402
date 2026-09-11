@@ -39,7 +39,7 @@ def _reset(monkeypatch: pytest.MonkeyPatch):
     ProviderHealth.reset()
     # Clear x402-related env between tests.
     for k in list(__import__("os").environ):
-        if k.startswith("FREERIDE_X402"):
+        if k.startswith("FREERIDE_X402") or k.startswith("HEDERA_"):
             monkeypatch.delenv(k, raising=False)
     yield
     ProviderHealth.reset()
@@ -255,6 +255,7 @@ class TestChatX402PaidPath:
         assert r.status_code == 200, r.text
         assert r.headers.get(HEADER_PAYMENT_RESPONSE)
         assert r.headers.get("X-FreeRide-Paid") == "hedera-x402"
+        assert r.headers.get("X-FreeRide-Lane") == "paid"
         body = r.json()
         assert body["choices"][0]["message"]["content"] == "from-paid"
         assert body["_freeride_paid"] == "hedera-x402"
@@ -313,6 +314,126 @@ class TestChatX402PaidPath:
             "/v1/chat/completions",
             json=_chat_body(model="x/y"),
             headers={HEADER_PAYMENT_SIGNATURE: "not-valid-base64-json!!!"},
+        )
+        assert r.status_code == 402
+        assert HEADER_PAYMENT_REQUIRED in r.headers
+
+
+# ---------------------------------------------------------------------------
+# Daemon auto-pay (payer env set → no 402)
+# ---------------------------------------------------------------------------
+
+
+class TestChatX402AutoPay:
+    def test_dry_run_auto_pay_when_payer_set(self, monkeypatch):
+        """Free exhaust + payer credentials → paid path, not 402."""
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("auto-paid"))
+        client = _client(
+            [provider],
+            monkeypatch,
+            env_keys={
+                "FREERIDE_X402_ENABLED": "1",
+                "FREERIDE_X402_PAY_TO": "0.0.8011510",
+                "FREERIDE_X402_FEE_PAYER": "0.0.7162784",
+                "FREERIDE_X402_DRY_RUN": "1",
+                "FREERIDE_X402_PAID_OPENROUTER_API_KEY": "paid-secret-key",
+                "FREERIDE_X402_PAYER_ACCOUNT": "0.0.payer",
+                "FREERIDE_X402_PAYER_KEY": "dry-run-key",
+                # No free keys → free exhaust immediately
+            },
+        )
+        r = client.post("/v1/chat/completions", json=_chat_body(model="x/y"))
+        assert r.status_code == 200, r.text
+        assert r.headers.get("X-FreeRide-Lane") == "paid"
+        assert r.headers.get(HEADER_PAYMENT_RESPONSE)
+        assert r.json()["choices"][0]["message"]["content"] == "auto-paid"
+        assert provider._calls == ["paid-secret-key"]
+
+    def test_no_payer_still_402(self, monkeypatch):
+        provider = _StubProvider("openrouter", chat_result=_ok_chat())
+        client = _client(
+            [provider],
+            monkeypatch,
+            env_keys={
+                "FREERIDE_X402_ENABLED": "1",
+                "FREERIDE_X402_PAY_TO": "0.0.8011510",
+                "FREERIDE_X402_FEE_PAYER": "0.0.7162784",
+                "FREERIDE_X402_DRY_RUN": "1",
+                "FREERIDE_X402_PAID_OPENROUTER_API_KEY": "paid-secret-key",
+            },
+        )
+        r = client.post("/v1/chat/completions", json=_chat_body(model="x/y"))
+        assert r.status_code == 402
+        assert HEADER_PAYMENT_REQUIRED in r.headers
+
+
+class TestFxX402AutoPay:
+    def test_fx_dry_run_auto_pay_no_usable_keys(self, monkeypatch):
+        from freeride.core.chat_schema import ChatResponse
+
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("fx-paid"))
+        # Ensure x402 env
+        for k, v in {
+            "FREERIDE_X402_ENABLED": "1",
+            "FREERIDE_X402_PAY_TO": "0.0.8011510",
+            "FREERIDE_X402_FEE_PAYER": "0.0.7162784",
+            "FREERIDE_X402_DRY_RUN": "1",
+            "FREERIDE_X402_PAID_OPENROUTER_API_KEY": "paid-secret-key",
+            "FREERIDE_X402_PAYER_ACCOUNT": "0.0.payer",
+            "FREERIDE_X402_PAYER_KEY": "dry-run-key",
+        }.items():
+            monkeypatch.setenv(k, v)
+
+        app = create_app(providers=[provider])
+        client = TestClient(app)
+        body = {
+            "prompt": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "tools": [],
+            "toolChoice": {"type": "auto"},
+        }
+        r = client.post(
+            "/v3/ai/language-model",
+            json=body,
+            headers={
+                "ai-language-model-id": "auto",
+                "ai-language-model-streaming": "false",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers.get("X-FreeRide-Lane") == "paid"
+        assert r.headers.get(HEADER_PAYMENT_RESPONSE)
+        assert provider._calls == ["paid-secret-key"]
+
+    def test_fx_402_without_payer(self, monkeypatch):
+        provider = _StubProvider("openrouter", chat_result=_ok_chat())
+        for k, v in {
+            "FREERIDE_X402_ENABLED": "1",
+            "FREERIDE_X402_PAY_TO": "0.0.8011510",
+            "FREERIDE_X402_FEE_PAYER": "0.0.7162784",
+            "FREERIDE_X402_DRY_RUN": "1",
+            "FREERIDE_X402_PAID_OPENROUTER_API_KEY": "paid",
+        }.items():
+            monkeypatch.setenv(k, v)
+        # Clear any payer leftover
+        monkeypatch.delenv("FREERIDE_X402_PAYER_ACCOUNT", raising=False)
+        monkeypatch.delenv("FREERIDE_X402_PAYER_KEY", raising=False)
+        monkeypatch.delenv("HEDERA_ACCOUNT_ID", raising=False)
+        monkeypatch.delenv("HEDERA_PRIVATE_KEY", raising=False)
+
+        app = create_app(providers=[provider])
+        client = TestClient(app)
+        body = {
+            "prompt": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            "tools": [],
+            "toolChoice": {"type": "auto"},
+        }
+        r = client.post(
+            "/v3/ai/language-model",
+            json=body,
+            headers={
+                "ai-language-model-id": "auto",
+                "ai-language-model-streaming": "false",
+            },
         )
         assert r.status_code == 402
         assert HEADER_PAYMENT_REQUIRED in r.headers

@@ -433,6 +433,64 @@ def _check_freeride_free_via_gateway(port: int = 11343) -> _Check:
     )
 
 
+def _check_x402_wallet() -> list[_Check]:
+    """Surface Hedera x402 cash-lane readiness (never print private keys)."""
+    from freeride.core.x402_hedera import has_payer_credentials, load_payer_credentials, load_x402_config
+
+    cfg = load_x402_config()
+    out: list[_Check] = []
+    if not cfg.enabled:
+        out.append(
+            _Check(
+                "info",
+                "x402 cash lane: off",
+                "optional — `freeride wallet setup` when free inference dies",
+            )
+        )
+        return out
+    if not cfg.pay_to:
+        out.append(
+            _Check(
+                "warn",
+                "x402 enabled but pay_to missing",
+                "set FREERIDE_X402_PAY_TO or run `freeride wallet setup`",
+            )
+        )
+    else:
+        out.append(
+            _Check(
+                "ok",
+                f"x402 cash lane: on → {cfg.pay_to}",
+                f"network={cfg.network} dry_run={'yes' if cfg.dry_run else 'no'}",
+            )
+        )
+    account, _key = load_payer_credentials()
+    if has_payer_credentials():
+        out.append(
+            _Check(
+                "ok",
+                f"x402 payer ready: {account}",
+                "daemon auto-pay enabled (key not shown)",
+            )
+        )
+    else:
+        out.append(
+            _Check(
+                "warn",
+                "x402 payer missing",
+                "run `freeride wallet setup` for seamless free→paid (else clients get HTTP 402)",
+            )
+        )
+    if not cfg.paid_openrouter_api_key:
+        out.append(
+            _Check(
+                "warn",
+                "x402 paid upstream key missing",
+                "set FREERIDE_X402_PAID_OPENROUTER_API_KEY (or OPENROUTER_API_KEY with credit)",
+            )
+        )
+    return out
+
 def run_checks(*, claude_code: bool = False, port: int = 11343) -> list[_Check]:
     # Mirror what `freeride serve` does — load ~/.freeride/.env BEFORE
     # checking provider env vars so doctor agrees with the gateway's
@@ -446,6 +504,7 @@ def run_checks(*, claude_code: bool = False, port: int = 11343) -> list[_Check]:
     checks.append(_check_freeride_on_path())
     checks.append(_check_freeride_dir())
     checks.extend(_check_provider_env_vars())
+    checks.extend(_check_x402_wallet())
     checks.extend(_check_port_or_gateway(port=port))
     checks.append(_check_telemetry())
 
