@@ -69,7 +69,10 @@ e2e = [
 ]
 
 [project.scripts]
-freeride = "freeride.cli.main:main"
+# The single `freeride` command users type is the agent launcher (shipped
+# with the agent), which forwards gateway subcommands here. Installing this
+# CLI as `freeride` too would make the launcher re-enter itself.
+freeride-gateway = "freeride.cli.main:main"
 freeride-watcher = "freeride.cli.watcher:main"
 
 [project.urls]
@@ -84,6 +87,10 @@ path = "freeride/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["freeride"]
+# The Hedera x402 signer is a Node script invoked by the daemon. It must
+# ship inside the package: a wheel install has no repo `scripts/` dir, so
+# resolving it relative to the source tree fails for real installs.
+artifacts = ["freeride/x402/*.mjs", "freeride/x402/package.json"]
 
 [tool.ruff]
 line-length = 100

@@ -394,9 +394,52 @@ def has_payer_credentials() -> bool:
     return bool(account and key)
 
 
+# Where the Node signer may live. A wheel install has no repo `scripts/`
+# next to the package, so a packaged copy inside `freeride/x402/` ships too.
+#
+# The signer imports `@x402/hedera` as ESM, and Node's ESM resolver walks
+# up from the SCRIPT's own directory looking for node_modules — it ignores
+# NODE_PATH entirely. So the script must run from a directory that has its
+# deps adjacent; we prefer such a location and materialize the packaged
+# copy into ~/.freeride/x402-signer when only that has node_modules.
+SIGNER_BASENAME = "x402_hedera_sign.mjs"
+SIGNER_HOME = Path.home() / ".freeride" / "x402-signer"
+
+
+def _signer_candidates() -> list[Path]:
+    out: list[Path] = []
+    override = os.environ.get("FREERIDE_X402_SIGNER", "").strip()
+    if override:
+        out.append(Path(override).expanduser())
+    pkg_root = Path(__file__).resolve().parents[1]  # freeride/
+    out.append(pkg_root.parent / "scripts" / SIGNER_BASENAME)  # source checkout
+    out.append(SIGNER_HOME / SIGNER_BASENAME)
+    out.append(pkg_root / "x402" / SIGNER_BASENAME)  # packaged
+    return out
+
+
+def _has_deps(script: Path) -> bool:
+    return (script.parent / "node_modules").is_dir()
+
+
 def _signer_script_path() -> Path:
-    # freeride/core/x402_hedera.py → repo root scripts/
-    return Path(__file__).resolve().parents[2] / "scripts" / "x402_hedera_sign.mjs"
+    """Pick a signer whose Node deps are reachable, materializing if needed."""
+    cands = _signer_candidates()
+    existing = [c for c in cands if c.is_file()]
+    for c in existing:
+        if _has_deps(c):
+            return c
+    # Nothing has adjacent deps. If the signer home does, copy the packaged
+    # script beside them so ESM resolution succeeds.
+    if existing and (SIGNER_HOME / "node_modules").is_dir():
+        target = SIGNER_HOME / SIGNER_BASENAME
+        try:
+            SIGNER_HOME.mkdir(parents=True, exist_ok=True)
+            target.write_text(existing[0].read_text(encoding="utf-8"), encoding="utf-8")
+            return target
+        except OSError as e:
+            logger.warning("could not stage Hedera signer into %s: %s", SIGNER_HOME, e)
+    return existing[0] if existing else cands[-1]
 
 
 def create_signed_payment_payload(
@@ -429,7 +472,11 @@ def create_signed_payment_payload(
 
     script = _signer_script_path()
     if not script.is_file():
-        raise X402Error(f"Missing Hedera signer helper: {script}")
+        raise X402Error(
+            "Missing Hedera signer helper. Looked in: "
+            + ", ".join(str(c) for c in _signer_candidates())
+            + ". Set FREERIDE_X402_SIGNER to its path."
+        )
 
     import subprocess
 
@@ -459,6 +506,13 @@ def create_signed_payment_payload(
 
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or b"").decode("utf-8", errors="replace")[:500]
+        if "Cannot find package" in err:
+            raise X402Error(
+                "Hedera signer cannot resolve its Node deps. Install them next "
+                f"to the signer: mkdir -p {SIGNER_HOME} && cp "
+                f"{script.parent / 'package.json'} {SIGNER_HOME}/ && "
+                f"cd {SIGNER_HOME} && npm install"
+            )
         raise X402Error(f"Hedera signer failed: {err or f'exit {proc.returncode}'}")
 
     try:

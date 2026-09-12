@@ -47,11 +47,16 @@ class _Check:
 
 
 def _check_freeride_on_path() -> _Check:
+    # `freeride` is the agent launcher, which forwards gateway subcommands
+    # here; this CLI installs as `freeride-gateway`. Either entry point is
+    # a working install, so accept whichever is present and name it.
     if shutil.which("freeride"):
         return _Check("ok", "`freeride` is on PATH")
+    if shutil.which("freeride-gateway"):
+        return _Check("ok", "`freeride-gateway` is on PATH")
     return _Check(
         "warn",
-        "`freeride` not on PATH",
+        "neither `freeride` nor `freeride-gateway` is on PATH",
         "use `python -m freeride` instead, or add ~/.local/bin to PATH",
     )
 
