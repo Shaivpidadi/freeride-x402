@@ -441,7 +441,7 @@ fn recoveryActionForSessionDiagnostic(
         .authority_transition_pending,
         .commit_intent_pending,
         .cleanup_candidate,
-        => "rerun ridex doctor after active writers exit; cleanup is guarded",
+        => "rerun freeride doctor after active writers exit; cleanup is guarded",
 
         .canonical_log_large,
         .canonical_log_compaction_overdue,
@@ -462,7 +462,7 @@ fn recoveryActionForSessionDiagnostic(
         .commit_watermark_mismatched,
         => std.fmt.bufPrint(
             buffer,
-            "run ridex session recover {s}; it creates a separate resumable copy and leaves the source unchanged",
+            "run freeride session recover {s}; it creates a separate resumable copy and leaves the source unchanged",
             .{session_id},
         ),
 
@@ -471,7 +471,7 @@ fn recoveryActionForSessionDiagnostic(
         .invalid_commit_intent,
         => std.fmt.bufPrint(
             buffer,
-            "back up ~/.fx/sessions, then inspect this session with ridex session {s} --json",
+            "back up ~/.fx/sessions, then inspect this session with freeride session {s} --json",
             .{session_id},
         ),
 
@@ -872,7 +872,7 @@ test "session doctor renders precise watermark and compaction diagnostics" {
     try std.testing.expect(std.mem.find(
         u8,
         checks.items[0].detail,
-        "ridex session recover missing-watermark",
+        "freeride session recover missing-watermark",
     ) != null);
     try std.testing.expectEqual(CheckStatus.warn, checks.items[1].status);
     try std.testing.expect(std.mem.find(

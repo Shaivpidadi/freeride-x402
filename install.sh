@@ -1,18 +1,18 @@
 #!/usr/bin/env sh
-# ridex installer. Run with:
+# freeride installer. Run with:
 #
 #   curl -sSL https://api.free-ride.xyz/ridex.sh | sh
 #
 # What this does:
-#   1. Downloads the latest ridex release tarball for this OS/arch from
+#   1. Downloads the latest freeride release tarball for this OS/arch from
 #      github.com/Shaivpidadi/ridex/releases (checksum-verified) and
-#      installs `ridex` (launcher) + `ridex-agent` (binary) into
+#      installs `freeride` (launcher) + `freeride-agent` (binary) into
 #      ~/.local/bin, plus the freeride operations skill into
-#      ~/.local/share/ridex/skills/.
+#      ~/.local/share/freeride/skills/.
 #   2. Installs the FreeRide gateway via the existing FreeRide
-#      installer (uv tool install freeride-gateway) — ridex's models
+#      installer (uv tool install freeride-gateway) — freeride's models
 #      all come from the local FreeRide daemon on 127.0.0.1:11343.
-#   3. Runs `ridex doctor`.
+#   3. Runs `freeride doctor`.
 #
 # Env knobs:
 #   RIDEX_REF=ridex-v0.1.0   install a specific release tag
@@ -23,12 +23,12 @@ set -e
 
 REPO="Shaivpidadi/ridex"
 BIN_DIR="$HOME/.local/bin"
-SHARE_DIR="$HOME/.local/share/ridex"
+SHARE_DIR="$HOME/.local/share/freeride"
 
 print() { printf '%s\n' "$*"; }
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-print "ridex installer"
+print "freeride installer"
 print ""
 
 # ── OS / arch → release asset name ─────────────────────────────────
@@ -37,7 +37,7 @@ arch="$(uname -m)"
 case "$os" in
     Darwin) os_tag="macos" ;;
     Linux)  os_tag="linux" ;;
-    *) err "ridex is not yet supported on $os (macOS and Linux only for now)." ;;
+    *) err "freeride is not yet supported on $os (macOS and Linux only for now)." ;;
 esac
 case "$arch" in
     arm64|aarch64) arch_tag="aarch64" ;;
@@ -81,19 +81,52 @@ fi
 # ── install ────────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR" "$SHARE_DIR"
 tar -xzf "$tmp/$asset" -C "$tmp"
-install -m 755 "$tmp/ridex-agent" "$BIN_DIR/ridex-agent"
-install -m 755 "$tmp/ridex" "$BIN_DIR/ridex"
+install -m 755 "$tmp/freeride-agent" "$BIN_DIR/freeride-agent"
+install -m 755 "$tmp/freeride" "$BIN_DIR/freeride"
 rm -rf "$SHARE_DIR/skills"
 cp -R "$tmp/skills" "$SHARE_DIR/skills"
-print "Installed ridex + ridex-agent to $BIN_DIR"
+print "Installed freeride + freeride-agent to $BIN_DIR"
 
 # ── FreeRide gateway ───────────────────────────────────────────────
 if [ "${RIDEX_SKIP_GATEWAY:-0}" = "1" ]; then
     print "Skipping FreeRide gateway install (RIDEX_SKIP_GATEWAY=1)."
 else
     print ""
-    print "Installing the FreeRide gateway (ridex's model backend)..."
+    print "Installing the FreeRide gateway (freeride's model backend)..."
     curl -sSL https://api.free-ride.xyz/install.sh | sh
+fi
+
+# ── Hedera x402 signer deps (optional cash lane) ───────────────────
+# The paid lane signs with @x402/hedera through Node. Node's ESM resolver
+# only finds deps in a node_modules beside the script, so they install
+# next to the signer the daemon stages in ~/.freeride/x402-signer.
+if [ "${RIDEX_SKIP_X402:-0}" = "1" ]; then
+    print "Skipping Hedera x402 signer deps (RIDEX_SKIP_X402=1)."
+elif command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    signer_dir="$HOME/.freeride/x402-signer"
+    if [ -d "$signer_dir/node_modules/@x402" ]; then
+        print "Hedera x402 signer deps already installed."
+    else
+        print ""
+        print "Installing Hedera x402 signer deps (optional paid lane)..."
+        mkdir -p "$signer_dir"
+        cat > "$signer_dir/package.json" <<'SIGNERPKG'
+{
+  "name": "freeride-x402-hedera-sign",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@hashgraph/sdk": "^2.62.0",
+    "@x402/hedera": "^2.0.0"
+  }
+}
+SIGNERPKG
+        ( cd "$signer_dir" && npm install --silent >/dev/null 2>&1 ) \
+            && print "  ok" \
+            || print "  could not install signer deps; the free lane still works."
+    fi
+else
+    print "Node 18+ not found — skipping x402 signer deps (free lane unaffected)."
 fi
 
 # ── PATH + verify ──────────────────────────────────────────────────
@@ -108,7 +141,7 @@ case ":$PATH:" in
 esac
 
 print "Checking the install..."
-"$BIN_DIR/ridex" doctor || true
+"$BIN_DIR/freeride" doctor || true
 
 print ""
-print "Done. Try:  ridex ask \"reply with the single word pong\""
+print "Done. Try:  freeride ask \"reply with the single word pong\""

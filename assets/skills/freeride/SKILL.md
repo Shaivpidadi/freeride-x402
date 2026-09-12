@@ -7,12 +7,12 @@ description: >-
   provider unavailable/rate limit notices, empty model list, slow first
   token, Hedera/x402/wallet prompts), whenever the user asks about the
   daemon, providers, API keys, models, cooldowns, wallet, or telemetry,
-  and before touching anything under ~/.freeride or ~/.ridex.
+  and before touching anything under ~/.freeride or ~/.freeride.
 ---
 
 # FreeRide operations
 
-This agent (ridex) does not talk to model vendors directly. Every request
+This agent (freeride) does not talk to model vendors directly. Every request
 goes to **FreeRide**, a local gateway daemon on `http://127.0.0.1:11343`,
 which fans out across free-tier providers — OpenRouter, Groq, NVIDIA NIM,
 HuggingFace, Cerebras, Cloudflare Workers AI, and local Ollama — with
@@ -21,7 +21,7 @@ the fault is almost always in this chain, and you can diagnose and fix it
 yourself with the commands below.
 
 ```
-ridex ──fx──▶ FreeRide :11343 ──free failover──▶ providers
+freeride ──fx──▶ FreeRide :11343 ──free failover──▶ providers
                          └─ free dies + wallet set ──auto-pay──▶ paid OpenRouter
 ```
 
@@ -55,7 +55,7 @@ Architecture facts that matter for diagnosis:
   **auto-pays** (daemon-side) and continues on paid OpenRouter in the
   same turn. Response headers include `X-FreeRide-Lane: paid`. Without a
   payer, the gateway returns **HTTP 402** — tell the user to run
-  `ridex wallet setup` (never invent a second agent).
+  `freeride wallet setup` (never invent a second agent).
 
 ## First move: read the gateway's own diagnosis
 
@@ -69,7 +69,7 @@ freeride doctor
 These read-only diagnostics are **pre-approved** — run them without
 hesitation: `freeride doctor`, `freeride keys`, `freeride providers`,
 `freeride telemetry`, `freeride wallet status`, `freeride --version`,
-`ridex doctor`, `ridex wallet status`, and any plain `curl` of
+and any plain `curl` of
 `127.0.0.1:11343/health`. Run each as its OWN command: chaining
 (`&&`, `;`, pipes) or wrapping them forfeits the pre-approval and
 triggers a permission review.
@@ -90,25 +90,25 @@ inline.
 
 ## Daemon lifecycle
 
-The launcher manages the daemon; state lives in `~/.ridex/`:
+The launcher manages the daemon; state lives in `~/.freeride/`:
 
 | command          | effect |
 |---|---|
-| `ridex start`    | start the daemon (clears a previous stop) |
-| `ridex stop`     | stop it — **sticks** via `~/.ridex/daemon.stopped` until `ridex start` |
-| `ridex restart`  | stop + wait for the port to free + start |
-| `ridex doctor`   | agent binary + daemon + key + wallet report |
-| `ridex wallet status|setup` | Hedera x402 cash-lane (passthrough to `freeride wallet`) |
+| `freeride start`    | start the daemon (clears a previous stop) |
+| `freeride stop`     | stop it — **sticks** via `~/.freeride/daemon.stopped` until `freeride start` |
+| `freeride restart`  | stop + wait for the port to free + start |
+| `freeride doctor`   | agent binary + daemon + key + wallet report |
+| `freeride wallet status|setup` | Hedera x402 cash-lane (passthrough to `freeride wallet`) |
 
 - The daemon is SUPERVISED where possible: a launchd LaunchAgent on
   macOS (`xyz.free-ride.gateway`, KeepAlive on abnormal exit) or a
   systemd user unit on Linux (`freeride.service`, Restart=on-failure) —
-  a crashed daemon restarts itself within seconds. `ridex doctor`
+  a crashed daemon restarts itself within seconds. `freeride doctor`
   shows which supervision mode is active.
-- Daemon log: `~/.ridex/daemon.log` (falls back to
+- Daemon log: `~/.freeride/daemon.log` (falls back to
   `~/.freeride/autospawn.log` for gateways started by `freeride run`).
-- "Connection refused" while `~/.ridex/daemon.stopped` exists means the
-  user stopped it deliberately — say so and suggest `ridex start`; do not
+- "Connection refused" while `~/.freeride/daemon.stopped` exists means the
+  user stopped it deliberately — say so and suggest `freeride start`; do not
   restart it yourself without being asked to get it running.
 - "port 11343 already in use" in the log → something else owns the port:
   `lsof -nP -iTCP:11343 -sTCP:LISTEN`.
@@ -119,10 +119,10 @@ The launcher manages the daemon; state lives in `~/.ridex/`:
 payer is configured (or auto-pay failed). Tell the user:
 
 ```bash
-ridex wallet setup
+freeride wallet setup
 ```
 
-Then `ridex restart` (or `freeride reload`). With payer + pay_to set,
+Then `freeride restart` (or `freeride reload`). With payer + pay_to set,
 the next turn should auto-pay silently (`X-FreeRide-Lane: paid`).
 
 **Structured 503 (JSON body)** — the gateway exhausted its chain. The body
@@ -152,7 +152,7 @@ Act on `last_error` per provider:
 `finishReason "error"` instead of an HTTP error; same taxonomy, read the
 message.
 
-**Empty model list** (`ridex models` shows only the presets) → no keyed
+**Empty model list** (`freeride models` shows only the presets) → no keyed
 provider is reachable; same fix as empty `keyed_providers`.
 
 ## Keys
@@ -197,7 +197,7 @@ provider is reachable; same fix as empty `keyed_providers`.
    `freeride init` + `freeride reload`.
 3. Requests still 503 → read the `tried` list and fix the named
    `last_error`s; check `freeride providers` for a full outage.
-4. Weird model behavior (wrong model, refused id) → `ridex models`,
+4. Weird model behavior (wrong model, refused id) → `freeride models`,
    prefer `freeride/coding` or `auto`.
 5. Bug in the gateway itself → `~/.freeride/events.jsonl` around the
    failing request id, then report with `freeride --version`.

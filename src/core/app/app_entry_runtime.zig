@@ -249,41 +249,41 @@ fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, alloc:
                 return .returned;
             },
             error.RecordingStartFailed => {
-                writeStderr(deps, "ridex: unable to start terminal recording.\n");
+                writeStderr(deps, "freeride: unable to start terminal recording.\n");
                 return .{ .exit = 1 };
             },
             error.NoSavedSessions => {
-                writeStderr(deps, "ridex: no saved sessions for this workspace.\n");
+                writeStderr(deps, "freeride: no saved sessions for this workspace.\n");
                 return .{ .exit = 1 };
             },
             error.SessionNotFound => {
-                writeStderr(deps, "ridex: saved session not found.\n");
+                writeStderr(deps, "freeride: saved session not found.\n");
                 return .{ .exit = 1 };
             },
             error.SessionBusy => {
-                writeStderr(deps, "ridex: another ridex process may be using this session (running or suspended); check other terminals or run jobs, then use fg or quit that process\n");
+                writeStderr(deps, "freeride: another freeride process may be using this session (running or suspended); check other terminals or run jobs, then use fg or quit that process\n");
                 return .{ .exit = 1 };
             },
             error.SessionLockUnsupported => {
-                writeStderr(deps, "ridex: the filesystem cannot provide the required session lock\n");
+                writeStderr(deps, "freeride: the filesystem cannot provide the required session lock\n");
                 return .{ .exit = 1 };
             },
             error.SessionAuthorityBoundaryUnavailable,
             error.SessionCommitBoundaryUnavailable,
             => {
-                writeStderr(deps, "ridex: this session is being updated; wait a moment and retry\n");
+                writeStderr(deps, "freeride: this session is being updated; wait a moment and retry\n");
                 return .{ .exit = 1 };
             },
             error.OneOffSessionNotResumable => {
-                writeStderr(deps, "ridex: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n");
+                writeStderr(deps, "freeride: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n");
                 return .{ .exit = 1 };
             },
             error.InvalidSessionFormat => {
-                writeStderr(deps, "ridex: saved session is unreadable. Run `ridex doctor`; if it is recoverable, use `ridex session recover <id>`.\n");
+                writeStderr(deps, "freeride: saved session is unreadable. Run `freeride doctor`; if it is recoverable, use `freeride session recover <id>`.\n");
                 return .{ .exit = 1 };
             },
             error.UnsupportedSessionSchema => {
-                writeStderr(deps, "ridex: saved session uses an unsupported version and cannot be resumed by this fx build.\n");
+                writeStderr(deps, "freeride: saved session uses an unsupported version and cannot be resumed by this fx build.\n");
                 return .{ .exit = 1 };
             },
             else => {
@@ -365,7 +365,7 @@ fn runInteractiveWithDeps(comptime App: type, comptime cooperative: bool, alloc:
         } else {
             writeStderr(
                 deps,
-                "ridex: upgrade installed, but no validated resume handoff was available. Your conversation remains on disk; run `ridex doctor`.\n",
+                "freeride: upgrade installed, but no validated resume handoff was available. Your conversation remains on disk; run `freeride doctor`.\n",
             );
         }
         return .{ .exit = 1 };
@@ -403,9 +403,9 @@ fn writeUpgradeRelaunchFailure(
     var buffer: [768]u8 = undefined;
     const message = std.fmt.bufPrint(
         &buffer,
-        "ridex: upgrade installed, but relaunch failed: {s}\nContinue session with: " ++ branding.cli_name ++ " --resume {s}\n",
+        "freeride: upgrade installed, but relaunch failed: {s}\nContinue session with: " ++ branding.cli_name ++ " --resume {s}\n",
         .{ @errorName(err), session_id },
-    ) catch "ridex: upgrade installed, but relaunch failed; run `ridex doctor`.\n";
+    ) catch "freeride: upgrade installed, but relaunch failed; run `freeride doctor`.\n";
     writeStderr(deps, message);
 }
 
@@ -484,7 +484,7 @@ fn formatResumeHandoff(buffer: []u8, session_id: []const u8) ![]const u8 {
 }
 
 fn formatUnexpectedError(buffer: []u8, err: anyerror) ![]const u8 {
-    return std.fmt.bufPrint(buffer, "ridex: {s}\n", .{@errorName(err)});
+    return std.fmt.bufPrint(buffer, "freeride: {s}\n", .{@errorName(err)});
 }
 
 fn reportUnexpectedInteractiveError(deps: RunDeps, err: anyerror) void {
@@ -498,7 +498,7 @@ fn writeStderr(deps: RunDeps, text: []const u8) void {
 }
 
 fn tryWriteErrorMessage(deps: RunDeps, err: anyerror) void {
-    writeStderr(deps, "ridex: ");
+    writeStderr(deps, "freeride: ");
     writeStderr(deps, @errorName(err));
     writeStderr(deps, "\n");
 }
@@ -923,7 +923,7 @@ test "app entry writes exact resume handoff after interactive teardown" {
 
     try std.testing.expectEqual(RunOutcome.returned, outcome);
     try std.testing.expectEqualStrings(
-        "Continue session with: ridex --resume session-123\n",
+        "Continue session with: freeride --resume session-123\n",
         capture.stdout.written(),
     );
     try std.testing.expectEqual(@as(usize, 1), capture.stdout_calls);
@@ -964,7 +964,7 @@ test "app entry bounds graceful-exit SIGINT suppression to handoff lifetime" {
 
     try std.testing.expectEqual(RunOutcome.returned, outcome);
     try std.testing.expectEqualStrings(
-        "Continue session with: ridex --resume session-123\n",
+        "Continue session with: freeride --resume session-123\n",
         capture.stdout.written(),
     );
     try std.testing.expectEqual(@as(usize, 0), test_sigint_count.load(.seq_cst));
@@ -1004,7 +1004,7 @@ test "app entry relaunches only after teardown with the validated handoff" {
     try std.testing.expect(std.mem.find(
         u8,
         capture.stderr.written(),
-        "ridex --resume session-123",
+        "freeride --resume session-123",
     ) != null);
     try expectEvents(&.{
         "init:none",
@@ -1096,7 +1096,7 @@ test "app entry reports unexpected init errors once and preserves identity" {
     capture.record_stderr_event = true;
 
     try std.testing.expectError(error.TestInitFailed, runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps()));
-    try std.testing.expectEqualStrings("ridex: TestInitFailed\n", capture.stderr.written());
+    try std.testing.expectEqualStrings("freeride: TestInitFailed\n", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
     try expectEvents(&.{ "init:none", "stderr-attempt" });
 }
@@ -1109,7 +1109,7 @@ test "app entry releases terminal before reporting worker start errors" {
     capture.record_stderr_event = true;
 
     try std.testing.expectError(error.TestWorkerStartFailed, runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps()));
-    try std.testing.expectEqualStrings("ridex: TestWorkerStartFailed\n", capture.stderr.written());
+    try std.testing.expectEqualStrings("freeride: TestWorkerStartFailed\n", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
     try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "terminal-release", "stderr-attempt", "deinit" });
 }
@@ -1135,7 +1135,7 @@ test "app entry releases terminal before reporting initial context failures exac
         var expected_stderr_buf: [64]u8 = undefined;
         const expected_stderr = try std.fmt.bufPrint(
             &expected_stderr_buf,
-            "ridex: {s}\n",
+            "freeride: {s}\n",
             .{@errorName(expected_error)},
         );
         try std.testing.expectEqualStrings(expected_stderr, capture.stderr.written());
@@ -1164,7 +1164,7 @@ test "app entry reports run errors before deinit and outer cleanup" {
     capture.record_stderr_event = true;
 
     try std.testing.expectError(error.TestRunFailed, runWithOuterCleanup(TestApp, alloc, &.{}, testConfig(), capture.deps()));
-    try std.testing.expectEqualStrings("ridex: TestRunFailed\n", capture.stderr.written());
+    try std.testing.expectEqualStrings("freeride: TestRunFailed\n", capture.stderr.written());
     try std.testing.expectEqual(@as(usize, 1), capture.stderr_calls);
     try std.testing.expectEqual(@as(usize, 0), capture.stdout_calls);
     try expectEvents(&.{ "init:none", "mcp-discovery", "rebind-after-init", "auto-upgrade", "file-index", "worker-thread", "model-cache", "run", "terminal-release", "stderr-attempt", "deinit", "outer-defer" });
@@ -1262,7 +1262,7 @@ test "app entry maps missing saved sessions to exit one" {
     const outcome = try runWithDeps(TestApp, alloc, &.{}, testConfig(), capture.deps());
 
     try std.testing.expectEqual(@as(u8, 1), outcome.exit);
-    try std.testing.expectEqualStrings("ridex: no saved sessions for this workspace.\n", capture.stderr.written());
+    try std.testing.expectEqualStrings("freeride: no saved sessions for this workspace.\n", capture.stderr.written());
 }
 
 test "app entry maps unavailable session state to one expected startup failure" {
@@ -1273,23 +1273,23 @@ test "app entry maps unavailable session state to one expected startup failure" 
     }{
         .{
             .init_error = error.SessionBusy,
-            .message = "ridex: another ridex process may be using this session (running or suspended); check other terminals or run jobs, then use fg or quit that process\n",
+            .message = "freeride: another freeride process may be using this session (running or suspended); check other terminals or run jobs, then use fg or quit that process\n",
         },
         .{
             .init_error = error.SessionLockUnsupported,
-            .message = "ridex: the filesystem cannot provide the required session lock\n",
+            .message = "freeride: the filesystem cannot provide the required session lock\n",
         },
         .{
             .init_error = error.SessionAuthorityBoundaryUnavailable,
-            .message = "ridex: this session is being updated; wait a moment and retry\n",
+            .message = "freeride: this session is being updated; wait a moment and retry\n",
         },
         .{
             .init_error = error.SessionCommitBoundaryUnavailable,
-            .message = "ridex: this session is being updated; wait a moment and retry\n",
+            .message = "freeride: this session is being updated; wait a moment and retry\n",
         },
         .{
             .init_error = error.OneOffSessionNotResumable,
-            .message = "ridex: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n",
+            .message = "freeride: subagent child sessions cannot be resumed directly; message the named agent from its parent session\n",
         },
     };
 

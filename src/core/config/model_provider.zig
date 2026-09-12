@@ -9,9 +9,9 @@ pub const ProviderId = enum {
     grok,
 };
 
-/// ridex ships FreeRide-first: the local gateway is the default route
+/// freeride ships FreeRide-first: the local gateway is the default route
 /// and needs no login. Vercel/Codex/Grok stay available via
-/// `ridex provider <name>`.
+/// `freeride provider <name>`.
 pub const default_provider: ProviderId = .freeride;
 
 /// Runtime default: `FX_DEFAULT_PROVIDER` overrides the compiled

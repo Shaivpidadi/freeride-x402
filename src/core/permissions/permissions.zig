@@ -1114,7 +1114,7 @@ pub fn ruleDecisionFor(alloc: std.mem.Allocator, rules: types.PermissionRuleSet,
     return evaluateRulesetForTool(rules.rules, permission, tool_name, pattern) orelse .none;
 }
 
-/// Read-only FreeRide diagnostics the agent may always run. ridex's
+/// Read-only FreeRide diagnostics the agent may always run. freeride's
 /// entire model chain is the local FreeRide gateway, and self-diagnosis
 /// (the bundled `freeride` skill) must not stall on permission prompts
 /// for commands that only report state. These are PREPENDED to the
@@ -1126,7 +1126,7 @@ pub const freeride_diagnostic_rules = [_]types.PermissionRule{
     .{ .permission = @constCast("bash"), .pattern = @constCast("freeride providers"), .action = .allow },
     .{ .permission = @constCast("bash"), .pattern = @constCast("freeride telemetry"), .action = .allow },
     .{ .permission = @constCast("bash"), .pattern = @constCast("freeride --version"), .action = .allow },
-    .{ .permission = @constCast("bash"), .pattern = @constCast("ridex doctor"), .action = .allow },
+    .{ .permission = @constCast("bash"), .pattern = @constCast("freeride wallet status"), .action = .allow },
     // Health probe in any curl spelling; the static-command guard on
     // bash allow rules already rejects chained/metachar commands.
     .{ .permission = @constCast("bash"), .pattern = @constCast("curl *127.0.0.1:11343/health"), .action = .allow },

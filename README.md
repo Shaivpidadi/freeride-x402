@@ -1,6 +1,6 @@
-# ridex
+# freeride
 
-**A coding agent that runs entirely on free-tier inference.** ridex is a
+**A coding agent that runs entirely on free-tier inference.** freeride is a
 fork of [vercel-labs/fx](https://github.com/vercel-labs/fx) whose default
 model provider is [FreeRide](https://github.com/Shaivpidadi/FreeRideV3) —
 a local gateway that fans requests out across OpenRouter, Groq, NVIDIA
@@ -10,7 +10,7 @@ Vercel account, no login.
 
 ```bash
 curl -sSL https://api.free-ride.xyz/ridex.sh | sh
-ridex
+freeride
 ```
 
 What the fork changes (deliberately small, to keep upstream rebases cheap):
@@ -18,22 +18,22 @@ What the fork changes (deliberately small, to keep upstream rebases cheap):
 - `freeride` as a fourth, default provider — it reuses fx's stock gateway
   transport pointed at the local FreeRide daemon on `127.0.0.1:11343`
   with a synthetic credential, so no wire code was added. Vercel AI
-  Gateway, Codex, and Grok remain selectable (`ridex provider <name>`).
-- A supervised gateway daemon (`ridex start|stop|restart|doctor` —
+  Gateway, Codex, and Grok remain selectable (`freeride provider <name>`).
+- A supervised gateway daemon (`freeride start|stop|restart|doctor` —
   launchd on macOS, systemd user unit on Linux) and a local key-setup
-  flow, via the `scripts/ridex` launcher.
+  flow, via the `scripts/freeride` launcher.
 - Free-first inference with an optional **Hedera x402** cash lane when
-  free dies: `ridex wallet setup` stores payer keys in `~/.freeride/.env`;
+  free dies: `freeride wallet setup` stores payer keys in `~/.freeride/.env`;
   FreeRide auto-pays so the agent keeps going in the same terminal.
 - A bundled `freeride` operations skill + pre-approved read-only
   diagnostics, so the agent can debug its own model plumbing.
-- User-visible branding (`ridex`); internal `FX_*` env vars and config
+- User-visible branding (`freeride`); internal `FX_*` env vars and config
   keys keep their upstream names. `FX_DEFAULT_PROVIDER=gateway` restores
   the stock default. Auto-upgrade defaults off (upstream's channel
   ships fx binaries).
 
 Releases: [tags `ridex-v*`](https://github.com/Shaivpidadi/ridex/releases) —
-tarballs with `ridex-agent`, the launcher, and the skill for macOS/Linux
+tarballs with `freeride-agent`, the launcher, and the skill for macOS/Linux
 (arm64 + x86_64). Everything below is upstream fx's README, which still
 applies to the underlying agent.
 
@@ -63,7 +63,7 @@ It's open source (Apache-2.0), model-agnostic, and suitable for both local and c
 ## Install
 
 ```bash
-# ridex (this fork) + the FreeRide gateway:
+# freeride (this fork) + the FreeRide gateway:
 curl -sSL https://api.free-ride.xyz/ridex.sh | sh
 ```
 

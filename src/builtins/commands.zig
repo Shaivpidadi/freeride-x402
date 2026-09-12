@@ -136,15 +136,15 @@ pub const top_level_specs = [_]TopLevelSpec{
         .summary = "Manage MCP servers without opening the interactive shell",
         .details = &.{
             "Commands:",
-            "  ridex mcp add NAME COMMAND [ARGS...]",
-            "  ridex mcp add --transport http NAME URL",
-            "  ridex mcp auth NAME",
-            "  ridex mcp list [--connect]",
-            "  ridex mcp logout NAME",
-            "  ridex mcp path",
-            "  ridex mcp remove NAME",
-            "  ridex mcp trust approve|reject NAME",
-            "  ridex mcp trust approve-all|reset",
+            "  freeride mcp add NAME COMMAND [ARGS...]",
+            "  freeride mcp add --transport http NAME URL",
+            "  freeride mcp auth NAME",
+            "  freeride mcp list [--connect]",
+            "  freeride mcp logout NAME",
+            "  freeride mcp path",
+            "  freeride mcp remove NAME",
+            "  freeride mcp trust approve|reject NAME",
+            "  freeride mcp trust approve-all|reset",
             "",
             "By default, list reads configuration without opening MCP transports.",
             "Use --connect to connect and discover servers before rendering health.",
@@ -243,7 +243,7 @@ pub const top_level_specs = [_]TopLevelSpec{
         .kind = .upgrade,
         .token = "upgrade",
         .usage = "upgrade [--channel <stable|dev>] [--json]",
-        .summary = "Upgrade ridex on the selected release channel",
+        .summary = "Upgrade freeride on the selected release channel",
         .options = &.{
             .{ .flag = "--channel <stable|dev>", .description = "Select and remember the release channel" },
             json_option,
@@ -363,31 +363,31 @@ pub const top_level_flags = [_]TopLevelFlag{
     },
     .{
         .usage = "-v, --version",
-        .description = "Print the ridex version and exit",
+        .description = "Print the freeride version and exit",
     },
 };
 
 pub const top_level_examples = [_]TopLevelExample{
-    .{ .command = "ridex", .description = "Start a fresh interactive session" },
-    .{ .command = "ridex ask \"Explain the changes in this repository\"", .description = "Run one request and exit" },
-    .{ .command = "ridex session resume last", .description = "Continue the latest session for this workspace" },
-    .{ .command = "ridex status --json", .description = "Inspect the current configuration as JSON" },
+    .{ .command = "freeride", .description = "Start a fresh interactive session" },
+    .{ .command = "freeride ask \"Explain the changes in this repository\"", .description = "Run one request and exit" },
+    .{ .command = "freeride session resume last", .description = "Continue the latest session for this workspace" },
+    .{ .command = "freeride status --json", .description = "Inspect the current configuration as JSON" },
 };
 
 pub const top_level_notes = [_][]const u8{
-    "Run `ridex <command> --help` for command-specific usage and options.",
+    "Run `freeride <command> --help` for command-specific usage and options.",
     "Run `/help` inside an interactive session for slash commands.",
 };
 
 pub const top_level_resources = [_]TopLevelResource{
-    .{ .label = "Learn more about ridex:", .value = "github.com/Shaivpidadi/ridex", .link = true },
-    .{ .label = "Report a problem:", .value = "run `/feedback` inside ridex" },
+    .{ .label = "Learn more about freeride:", .value = "github.com/Shaivpidadi/ridex", .link = true },
+    .{ .label = "Report a problem:", .value = "run `/feedback` inside freeride" },
 };
 
 pub const top_level_registry = TopLevelRegistry{
     .specs = top_level_specs[0..],
     .description = "Fast, native coding agent for the terminal.",
-    .interactive_hint = "ridex starts an interactive session by default. Use `ridex ask` to run one noninteractive request.",
+    .interactive_hint = "freeride starts an interactive session by default. Use `freeride ask` to run one noninteractive request.",
     .help_groups = top_level_help_groups[0..],
     .flags = top_level_flags[0..],
     .examples = top_level_examples[0..],

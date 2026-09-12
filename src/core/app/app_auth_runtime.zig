@@ -325,7 +325,7 @@ pub fn Runtime(comptime App: type) type {
                     try writeAuthNotice(app, .{
                         .topic = "auth",
                         .tone = .@"error",
-                        .body = "Could not complete ridex logout. The current source is unchanged.",
+                        .body = "Could not complete freeride logout. The current source is unchanged.",
                     });
                     return;
                 },
@@ -439,7 +439,7 @@ pub fn Runtime(comptime App: type) type {
         fn applyLogoutResult(app: *App, result: login_flow.LogoutResult) !void {
             // Logging out is an explicit rejection of that credential, so a
             // remembered pointer to it would silently reactivate on next login.
-            // A remembered source always wins resolution, so an active ridex login
+            // A remembered source always wins resolution, so an active freeride login
             // is the only way one can be remembered; clearing otherwise is a
             // no-op against a store that holds nothing.
             if (app.auth.credentialSource() == .fx_login) forgetCredentialSource(app);
@@ -448,7 +448,7 @@ pub fn Runtime(comptime App: type) type {
                 .{
                     .topic = "auth",
                     .tone = .warning,
-                    .body = "Could not confirm durable ridex logout. The active source was recalculated.",
+                    .body = "Could not confirm durable freeride logout. The active source was recalculated.",
                 }
             else if (result.session_deleted)
                 .{
@@ -460,7 +460,7 @@ pub fn Runtime(comptime App: type) type {
                 .{
                     .topic = "auth",
                     .tone = .neutral,
-                    .body = "No ridex login session found.",
+                    .body = "No freeride login session found.",
                 });
             if (result.remote_revocation_failed) {
                 try writeAuthNotice(app, .{
@@ -1058,9 +1058,9 @@ pub fn Runtime(comptime App: type) type {
                         .body = if (intent == .post_oauth)
                             "Subscription sign-in completed, but its saved credential is unavailable. The current provider is unchanged."
                         else if (target == .codex)
-                            "Run ridex login codex, then try switching again."
+                            "Run freeride login codex, then try switching again."
                         else if (target == .grok)
-                            "Run ridex login grok, then try switching again."
+                            "Run freeride login grok, then try switching again."
                         else
                             credentials.missing_interactive_credential_message,
                     }, true);
@@ -1284,7 +1284,7 @@ pub fn Runtime(comptime App: type) type {
                     .topic = "auth",
                     .tone = .@"error",
                     .body = switch (err) {
-                        error.NoSession => "The ridex login session is no longer available. Sign in to change teams.",
+                        error.NoSession => "The freeride login session is no longer available. Sign in to change teams.",
                         error.NoTeams => "No Vercel teams are available for this account.",
                         else => "Could not load Vercel teams. The current team is unchanged.",
                     },
@@ -1341,7 +1341,7 @@ pub fn Runtime(comptime App: type) type {
                     .topic = "auth",
                     .tone = .@"error",
                     .body = switch (err) {
-                        error.SessionChanged, error.NoSession => "The ridex login session changed before the team could be saved.",
+                        error.SessionChanged, error.NoSession => "The freeride login session changed before the team could be saved.",
                         else => "Could not change the Vercel team. The current team is unchanged.",
                     },
                 }, true);
@@ -1380,7 +1380,7 @@ pub fn Runtime(comptime App: type) type {
                 try app.writeDomainNotice(.{
                     .topic = "auth",
                     .tone = .@"error",
-                    .body = "Changed the Vercel team, but the ridex login credential could not be loaded.",
+                    .body = "Changed the Vercel team, but the freeride login credential could not be loaded.",
                 }, true);
                 return false;
             }
@@ -1791,7 +1791,7 @@ pub fn Runtime(comptime App: type) type {
                     else => .{ .topic = "auth", .tone = .@"error", .body = "Grok sign-in failed. The current credential is unchanged." },
                 }
             else switch (err) {
-                error.ClientIdMissing => .{ .topic = "auth", .tone = .@"error", .body = "ridex login is not configured yet. The current credential is unchanged." },
+                error.ClientIdMissing => .{ .topic = "auth", .tone = .@"error", .body = "freeride login is not configured yet. The current credential is unchanged." },
                 error.AccessDenied => .{ .topic = "auth", .tone = .@"error", .body = "Vercel sign-in was denied. The current credential is unchanged." },
                 error.ExpiredToken, error.LoginTimedOut => .{ .topic = "auth", .tone = .warning, .body = "The Vercel sign-in code expired. The current credential is unchanged; run /login to try again." },
                 else => .{ .topic = "auth", .tone = .@"error", .body = "Vercel sign-in failed. The current credential is unchanged." },
@@ -2666,7 +2666,7 @@ test "completed credential switch emits exactly one transcript line" {
     try std.testing.expectEqualStrings(expected, app.transcript.items);
 }
 
-test "team change from an environment source activates and remembers ridex login" {
+test "team change from an environment source activates and remembers freeride login" {
     var app: TestApp = .{};
     defer app.deinit();
     app.auth.select_result = true;
@@ -2688,7 +2688,7 @@ test "team change from an environment source activates and remembers ridex login
     );
 }
 
-test "team change on an active ridex login reloads and remembers the selected credential" {
+test "team change on an active freeride login reloads and remembers the selected credential" {
     var app: TestApp = .{};
     defer app.deinit();
     app.auth.active_source = .fx_login;
@@ -2880,7 +2880,7 @@ test "logout durability failure still reconciles live auth" {
 
     try std.testing.expectEqual(@as(usize, 1), app.auth.logout_reconcile_count);
     try std.testing.expectEqual(@as(usize, 1), app.model_cache.reset_count);
-    try std.testing.expect(std.mem.find(u8, app.transcript.items, "Could not confirm durable ridex logout.") != null);
+    try std.testing.expect(std.mem.find(u8, app.transcript.items, "Could not confirm durable freeride logout.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, login_flow.remote_revocation_warning) != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "current source is unchanged") == null);
 }
@@ -2891,7 +2891,7 @@ test "prompt credential refresh failure is recoverable and detail-free" {
     app.auth.refresh_error = error.OAuthRequestFailed;
 
     try std.testing.expect(!try Runtime(TestApp).preparePromptCredential(&app));
-    try std.testing.expect(std.mem.find(u8, app.transcript.items, "ridex login credential refresh failed.") != null);
+    try std.testing.expect(std.mem.find(u8, app.transcript.items, "freeride login credential refresh failed.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Press Enter to retry.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Your prompt is saved.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Choose another source") == null);
@@ -2921,7 +2921,7 @@ test "permanent prompt credential failure is one repair episode" {
     );
     try std.testing.expectEqual(
         @as(usize, 1),
-        std.mem.count(u8, app.transcript.items, "ridex login sign-in expired."),
+        std.mem.count(u8, app.transcript.items, "freeride login sign-in expired."),
     );
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Your prompt is saved.") != null);
 }
@@ -2945,7 +2945,7 @@ test "prompt credential admission rejects a credential that remains unavailable"
 
     try std.testing.expect(!try Runtime(TestApp).preparePromptCredential(&app));
     try std.testing.expectEqual(@as(usize, 2), app.auth.refresh_count);
-    try std.testing.expect(std.mem.find(u8, app.transcript.items, "ridex login sign-in expired.") != null);
+    try std.testing.expect(std.mem.find(u8, app.transcript.items, "freeride login sign-in expired.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Press Enter to sign in again.") != null);
     try std.testing.expect(std.mem.find(u8, app.transcript.items, "Your prompt is saved.") != null);
     try std.testing.expect(!app.auth.picker_opened);

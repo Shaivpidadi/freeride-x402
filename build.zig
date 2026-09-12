@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(WasmSurface, "wasm_surface", .none);
 
     const exe = b.addExecutable(.{
-        .name = "ridex",
+        .name = "freeride-agent",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
     // Upstream's e2e/benchmark tooling resolves zig-out/bin/fx; install
     // the same binary under the legacy name so the fork can keep running
-    // upstream CI unmodified while the product ships as `ridex`.
+    // upstream CI unmodified while the product ships as `freeride`.
     b.getInstallStep().dependOn(&b.addInstallBinFile(exe.getEmittedBin(), "fx").step);
 
     const run_cmd = b.addRunArtifact(exe);
@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
     run_exe_tests.step.dependOn(b.getInstallStep());
     run_exe_tests.setEnvironmentVariable(
         "FX_TEST_PRODUCT_EXE",
-        b.getInstallPath(.bin, "ridex"),
+        b.getInstallPath(.bin, "freeride-agent"),
     );
 
     const test_step = b.step("test", "Run tests");

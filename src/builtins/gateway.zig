@@ -48,7 +48,7 @@ const credits_path = "/coding-agent/v1/credits";
 pub const retry_count: usize = 3;
 pub const chat_url_env = "FX_GATEWAY_CHAT_URL";
 pub const default_model_catalog_base_url = "https://ai-gateway.vercel.sh";
-// FreeRide's local gateway (ridex's default provider). Loopback by
+// FreeRide's local gateway (freeride's default provider). Loopback by
 // definition, so the same trust rules as the FX_GATEWAY_* overrides
 // apply automatically.
 pub const freeride_default_chat_url = "http://127.0.0.1:11343/v3/ai/language-model";
@@ -737,7 +737,7 @@ fn fetchCredits(
     );
 }
 
-/// An ridex login can reach several teams, so `/v1/credits` rejects it outright
+/// An freeride login can reach several teams, so `/v1/credits` rejects it outright
 /// unless the request names one. The endpoint reads the team from a `teamId`
 /// query value and ignores `x-vercel-ai-gateway-team`, which is the reverse of
 /// the inference endpoint. An API key carries its own team and resolves to no

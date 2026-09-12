@@ -6,7 +6,7 @@ name: ridex release
 #
 # Cross-compiles from ubuntu (same pattern as dev-release.yml), but
 # packages the ridex product: the agent binary shipped as
-# `ridex-agent`, the `ridex` launcher (daemon lifecycle + key setup),
+# `freeride-agent`, the `freeride` launcher (daemon lifecycle + key setup),
 # the freeride operations skill, and the installer. Upstream's own
 # release workflows are untouched.
 
@@ -53,13 +53,13 @@ jobs:
         run: |
           package_dir="$RUNNER_TEMP/ridex-${{ matrix.name }}"
           mkdir -p "$package_dir/skills/freeride"
-          cp zig-out/bin/ridex "$package_dir/ridex-agent"
-          cp scripts/ridex "$package_dir/ridex"
+          cp zig-out/bin/freeride-agent "$package_dir/freeride-agent"
+          cp scripts/freeride "$package_dir/freeride"
           cp assets/skills/freeride/SKILL.md "$package_dir/skills/freeride/SKILL.md"
           cp LICENSE THIRD_PARTY_NOTICES.md "$package_dir/"
-          chmod +x "$package_dir/ridex-agent" "$package_dir/ridex"
+          chmod +x "$package_dir/freeride-agent" "$package_dir/freeride"
           tar -czf "ridex-${{ matrix.name }}.tar.gz" -C "$package_dir" \
-            ridex-agent ridex skills LICENSE THIRD_PARTY_NOTICES.md
+            freeride-agent freeride skills LICENSE THIRD_PARTY_NOTICES.md
           sha256sum "ridex-${{ matrix.name }}.tar.gz" > "ridex-${{ matrix.name }}.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4

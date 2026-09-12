@@ -54,7 +54,7 @@ pub const web_fetch_unavailable_message = "web_fetch is unavailable: no local We
 pub const terminal_unavailable_message =
     "{\"error\":{\"tool\":\"shell\",\"code\":\"unsupported_host\",\"retryable\":false}}";
 const terminal_saved_session_required_message =
-    "TTY shell actions require a saved ridex session.";
+    "TTY shell actions require a saved freeride session.";
 const terminal_saved_session_required_suggestion =
     "Use shell.run with tty=false, or rerun without --no-save.";
 
