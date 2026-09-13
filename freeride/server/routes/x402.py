@@ -39,6 +39,7 @@ from freeride.core.x402_hedera import (
     decode_payment_payload,
     encode_settlement_response,
     has_payer_credentials,
+    last_settlement,
     load_x402_config,
     payment_requirements_from_required,
     verify_and_settle,
@@ -310,5 +311,6 @@ async def x402_policy() -> dict[str, Any]:
         "facilitator": cfg.facilitator,
         "dry_run": cfg.dry_run,
         "force_paid": cfg.force_paid,
+        "last_payment": last_settlement(),
         "header_payment_required": HEADER_PAYMENT_REQUIRED,
     }

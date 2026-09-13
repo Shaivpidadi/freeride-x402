@@ -18,6 +18,7 @@ import base64
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -281,6 +282,34 @@ def attach_payment_response(
     return response
 
 
+# The most recent settlement, so a client can show what it just paid without
+# threading the receipt back through the response body. Process-local and
+# best-effort: it is a receipt for the human, never an accounting record.
+_last_settlement: dict[str, Any] | None = None
+
+
+def note_settlement(settlement: dict[str, Any], *, amount: str, pay_to: str) -> None:
+    global _last_settlement
+    tx = settlement.get("transaction")
+    try:
+        hbar = f"{int(amount) / 100_000_000:.8f}".rstrip("0").rstrip(".")
+    except (TypeError, ValueError):
+        hbar = amount
+    _last_settlement = {
+        "transaction": tx,
+        "amount_hbar": hbar,
+        "payer": settlement.get("payer"),
+        "pay_to": pay_to,
+        "amount": amount,
+        "at": time.time(),
+        "explorer": (f"https://hashscan.io/testnet/transaction/{tx}" if tx else None),
+    }
+
+
+def last_settlement() -> dict[str, Any] | None:
+    return _last_settlement
+
+
 async def verify_and_settle(
     cfg: X402Config,
     *,
@@ -299,13 +328,19 @@ async def verify_and_settle(
             # Best-effort: dry-run clients may put a marker payer.
             accepted = payment_payload.get("accepted") or {}
             payer = payment_payload.get("payer") or accepted.get("payTo")
-        return {
+        stub = {
             "success": True,
             "transaction": "dry-run.0.0.0@0.0",
             "network": cfg.network,
             "payer": payer or "dry-run",
             "dryRun": True,
         }
+        note_settlement(
+            stub,
+            amount=str(payment_requirements.get("amount") or cfg.amount),
+            pay_to=str(payment_requirements.get("payTo") or cfg.pay_to),
+        )
+        return stub
 
     body = {
         "x402Version": 2,
@@ -357,6 +392,11 @@ async def verify_and_settle(
                 f"Payment settlement failed: {reason}",
                 detail={"settlement": settlement},
             )
+        note_settlement(
+            settlement,
+            amount=str(payment_requirements.get("amount") or cfg.amount),
+            pay_to=str(payment_requirements.get("payTo") or cfg.pay_to),
+        )
         return settlement
     finally:
         if own:
