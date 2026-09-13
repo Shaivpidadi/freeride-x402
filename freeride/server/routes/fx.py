@@ -285,8 +285,29 @@ async def _fx_complete_paid(
             tool_calls = msg.get("tool_calls") or []
             finish_reason = choices[0].get("finish_reason") or "stop"
 
+        # The client cannot see response headers on a stream it is already
+        # consuming, so the receipt rides in-band on the metadata event. A
+        # paid turn that says nothing is indistinguishable from a free one.
+        _paid_meta: dict[str, Any] = {"freerideLane": "paid"}
+        _tx = settlement.get("transaction")
+        if _tx:
+            _paid_meta["freeridePaymentTx"] = str(_tx)
+        try:
+            _amount = int(cfg.amount)
+            _paid_meta["freeridePaidHbar"] = (
+                f"{_amount / 100_000_000:.8f}".rstrip("0").rstrip(".")
+            )
+        except (TypeError, ValueError):
+            pass
+
         async def _emit() -> AsyncIterator[bytes]:
-            yield _sse({"type": "response-metadata", "modelId": openai_request.model})
+            yield _sse(
+                {
+                    "type": "response-metadata",
+                    "modelId": openai_request.model,
+                    **_paid_meta,
+                }
+            )
             if content:
                 yield _sse({"type": "text-delta", "id": "answer_1", "delta": content})
             for i, tc in enumerate(tool_calls):
