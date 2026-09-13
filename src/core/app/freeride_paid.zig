@@ -38,6 +38,22 @@ fn boolField(body: []const u8, key: []const u8) ?bool {
     return null;
 }
 
+/// Reads a top-level string out of the same flat replies. Returns a slice of
+/// `body`, so it lives exactly as long as the response buffer.
+fn stringField(body: []const u8, key: []const u8) ?[]const u8 {
+    var needle_buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&needle_buf, "\"{s}\"", .{key}) catch return null;
+    const at = std.mem.find(u8, body, needle) orelse return null;
+    var i = at + needle.len;
+    while (i < body.len and (body[i] == ' ' or body[i] == ':')) : (i += 1) {}
+    if (i >= body.len or body[i] != '"') return null;
+    i += 1;
+    const start = i;
+    while (i < body.len and body[i] != '"') : (i += 1) {}
+    if (i >= body.len) return null;
+    return body[start..i];
+}
+
 /// The daemon's replies here are a few dozen bytes; a fixed buffer keeps this
 /// path allocation-free and bounds a misbehaving response.
 fn fetch(alloc: std.mem.Allocator, url: []const u8, payload: ?[]const u8, sink: []u8) Error![]const u8 {
@@ -79,14 +95,34 @@ pub fn apply(alloc: std.mem.Allocator, want: ?bool, out: []u8) Error![]const u8 
         break :blk boolField(body, "force_paid") orelse false;
     };
 
+    // The most recent receipt, if the daemon has one. Shown as a quiet
+    // trailer rather than a banner: the payment is the point, not the news.
+    var receipt: [180]u8 = undefined;
+    var receipt_len: usize = 0;
+    {
+        var policy_sink: [2048]u8 = undefined;
+        if (fetch(alloc, policy_url, null, &policy_sink)) |policy_body| {
+            if (stringField(policy_body, "transaction")) |tx| {
+                const amount = stringField(policy_body, "amount_hbar") orelse "";
+                const trailer = std.fmt.bufPrint(
+                    &receipt,
+                    "\n  last payment {s} HBAR · {s}",
+                    .{ amount, tx },
+                ) catch "";
+                receipt_len = trailer.len;
+            }
+        } else |_| {}
+    }
+
     const text = if (on)
         "Paid lane ON. Every request settles on Hedera; free providers are skipped. /paid off to stop."
     else
         "Paid lane off. Free providers first; Hedera pays only when free cannot serve.";
 
-    if (text.len > out.len) return Error.OutOfMemory;
+    if (text.len + receipt_len > out.len) return Error.OutOfMemory;
     @memcpy(out[0..text.len], text);
-    return out[0..text.len];
+    if (receipt_len > 0) @memcpy(out[text.len..][0..receipt_len], receipt[0..receipt_len]);
+    return out[0 .. text.len + receipt_len];
 }
 
 test "boolField reads the daemon's flat replies" {

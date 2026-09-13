@@ -1009,7 +1009,7 @@ pub fn Handlers(comptime App: type) type {
                 return;
             };
 
-            var buf: [512]u8 = undefined;
+            var buf: [768]u8 = undefined;
             const body = freeride_paid.apply(app.alloc, want, &buf) catch |err| {
                 const message = switch (err) {
                     error.DaemonUnreachable => "FreeRide daemon is not reachable on 127.0.0.1:11343.",
