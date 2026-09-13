@@ -3,6 +3,7 @@ const runtime_profile = @import("../hosts/runtime_profile.zig");
 const app_permission_runtime = @import("app_permission_runtime.zig");
 const app_session_runtime = @import("app_session_runtime.zig");
 const io_mod = @import("../shared/io.zig");
+const freeride_paid = @import("freeride_paid.zig");
 const auth_runtime = @import("../auth/auth_runtime.zig");
 const credentials = @import("../auth/credentials.zig");
 const gateway_provider = @import("../gateway/gateway_provider.zig");
@@ -368,6 +369,7 @@ pub fn Handlers(comptime App: type) type {
                 .handle_settings = commandHandleSettings,
                 .handle_alias = commandHandleAlias,
                 .show_credits = commandShowCredits,
+                .toggle_paid = commandTogglePaid,
                 .paste_clipboard = commandPasteClipboard,
                 .toggle_fast = commandToggleFast,
                 .handle_statusline = commandHandleStatusline,
@@ -979,6 +981,54 @@ pub fn Handlers(comptime App: type) type {
         fn commandHandleAllowlist(ctx: *anyopaque, rest: []const u8) !void {
             const app: *App = @ptrCast(@alignCast(ctx));
             try session_commands.Commands(App).handleAllowlist(app, rest);
+        }
+
+        /// `/paid [on|off]` — flip the Hedera cash lane mid-session.
+        ///
+        /// Free-first hides the paid lane whenever free works, which is right
+        /// for users and useless for a demo. The daemon holds the switch in
+        /// process memory, so this shows the free path and the paid path in
+        /// one session without restarting anything or breaking the operator's
+        /// provider keys.
+        fn commandTogglePaid(ctx: *anyopaque, rest: []const u8) !void {
+            const app: *App = @ptrCast(@alignCast(ctx));
+            const arg = std.mem.trim(u8, rest, " \t");
+
+            const want: ?bool = if (arg.len == 0)
+                null
+            else if (std.ascii.eqlIgnoreCase(arg, "on"))
+                true
+            else if (std.ascii.eqlIgnoreCase(arg, "off"))
+                false
+            else {
+                try app.writeDomainNotice(.{
+                    .topic = "paid",
+                    .tone = .warning,
+                    .body = "Usage: /paid [on|off]",
+                }, true);
+                return;
+            };
+
+            var buf: [512]u8 = undefined;
+            const body = freeride_paid.apply(app.alloc, want, &buf) catch |err| {
+                const message = switch (err) {
+                    error.DaemonUnreachable => "FreeRide daemon is not reachable on 127.0.0.1:11343.",
+                    error.WalletNotReady => "No Hedera wallet configured. Run: freeride wallet setup",
+                    else => "Could not reach the FreeRide daemon.",
+                };
+                try app.writeDomainNotice(.{
+                    .topic = "paid",
+                    .tone = .warning,
+                    .body = message,
+                }, true);
+                return;
+            };
+
+            try app.writeDomainNotice(.{
+                .topic = "paid",
+                .tone = .neutral,
+                .body = body,
+            }, true);
         }
 
         fn commandShowStats(ctx: *anyopaque) !void {

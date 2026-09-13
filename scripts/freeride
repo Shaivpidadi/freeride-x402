@@ -419,7 +419,7 @@ case "${1:-}" in
     # now that both halves answer to one name. Verbs the agent also owns
     # (status, models, upgrade) stay with the agent; reach the gateway's
     # versions through `freeride gateway <cmd>`.
-    serve|init|keys|providers|telemetry|reload|bind|audit-models|bench|watch|run)
+    serve|init|keys|providers|telemetry|reload|bind|audit-models|bench|watch|run|paid)
         require_freeride
         # shellcheck disable=SC2086
         exec $FREERIDE_CMD "$@"
