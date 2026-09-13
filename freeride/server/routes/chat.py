@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.model_router import parse_freeride_model, reorder_providers_for_preset
 from freeride.core.chat_schema import ChatRequest, ChatStreamEvent
 from freeride.core.cooldown import KeyCooldown
 from freeride.core.events import emit as emit_event
@@ -467,9 +468,16 @@ async def chat_completions(request: Request, body: ChatRequest):
             return maybe
         raise HTTPException(status_code=503, detail=detail)
 
-    if is_auto_model(body.model):
+    preset = parse_freeride_model(body.model or "")
+    if is_auto_model(body.model) or preset is not None:
         catalog = await get_or_fetch_catalog(providers, group=True)
-        resolved_id, resolved_provider = resolve_auto_model(providers, catalog)
+        ordered = providers
+        if preset is not None:
+            # Bias the pick the way the preset asks, then resolve normally.
+            names = reorder_providers_for_preset([p.name for p in providers], preset)
+            by_name = {p.name: p for p in providers}
+            ordered = [by_name[n] for n in names if n in by_name]
+        resolved_id, resolved_provider = resolve_auto_model(ordered, catalog)
         if resolved_id is None:
             emit_event(
                 "request_failed",
@@ -481,7 +489,10 @@ async def chat_completions(request: Request, body: ChatRequest):
                 detail={
                     "error": {
                         "type": "no_model_available",
-                        "message": "model='auto' was requested but no provider has a usable model + key right now.",
+                        "message": (
+                            f"model={body.model!r} was requested but no provider has a "
+                            "usable model + key right now."
+                        ),
                         "request_id": ctx.request_id,
                         "suggestion": "Run `freeride list` to see the catalog and `freeride keys` to see cooldowns.",
                     }

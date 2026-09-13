@@ -440,3 +440,72 @@ class TestFxX402AutoPay:
         )
         assert r.status_code == 402
         assert HEADER_PAYMENT_REQUIRED in r.headers
+
+
+class TestPresetsDoNotTriggerPayment:
+    """`freeride/*` presets must be resolved, not shipped upstream verbatim.
+
+    Regression: the chat route only resolved the `auto` sentinels, so a preset
+    id travelled to every provider as a literal model name, each 404'd, the
+    x402 lane read that as "free exhausted" and settled a payment — for a
+    request the paid upstream then rejected with 400. A routing bug that
+    charges the user is worth a test.
+    """
+
+    @pytest.mark.parametrize(
+        "model", ["freeride/coding", "freeride/fast", "freeride/quality", "freeride/free"]
+    )
+    def test_preset_is_resolved_before_dispatch(self, monkeypatch, model):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("pong"))
+        app = create_app(providers=[provider])
+
+        async def _catalog(_providers, group=True):  # noqa: ARG001
+            return {"openrouter": ["llama-3.1-8b-instruct"]}
+
+        with (
+            patch("freeride.server.routes.chat.get_or_fetch_catalog", new=_catalog),
+            patch(
+                "freeride.server.routes.chat.resolve_auto_model",
+                return_value=("llama-3.1-8b-instruct", "openrouter"),
+            ),
+        ):
+            resp = TestClient(app).post(
+                "/v1/chat/completions",
+                json={"model": model, "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 200, resp.text
+        # The preset name must never reach a provider as a model id.
+        sent = provider.forward_chat.await_args
+        assert sent is not None
+        assert sent.args[1] == "llama-3.1-8b-instruct"
+
+    def test_preset_does_not_reach_the_cash_lane(self, monkeypatch):
+        """With x402 armed, an unresolvable preset must not settle anything."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("FREERIDE_X402_ENABLED", "1")
+        monkeypatch.setenv("FREERIDE_X402_PAY_TO", "0.0.5000")
+        monkeypatch.setenv("FREERIDE_X402_PAYER_ACCOUNT", "0.0.4000")
+        monkeypatch.setenv("FREERIDE_X402_PAYER_KEY", "0xabc")
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("pong"))
+        app = create_app(providers=[provider])
+
+        async def _catalog(_providers, group=True):  # noqa: ARG001
+            return {"openrouter": ["llama-3.1-8b-instruct"]}
+
+        with (
+            patch("freeride.server.routes.chat.get_or_fetch_catalog", new=_catalog),
+            patch(
+                "freeride.server.routes.chat.resolve_auto_model",
+                return_value=("llama-3.1-8b-instruct", "openrouter"),
+            ),
+            patch("freeride.core.x402_hedera.auto_pay_settle") as settle,
+        ):
+            resp = TestClient(app).post(
+                "/v1/chat/completions",
+                json={"model": "freeride/coding", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 200
+        settle.assert_not_called()
