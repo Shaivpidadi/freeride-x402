@@ -1,0 +1,14 @@
+{
+  "name": "freeride-x402-hedera-sign",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Daemon-side Hedera x402 Exact scheme signer for FreeRide auto-pay",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "^2.62.0",
+    "@x402/hedera": "^2.0.0"
+  }
+}

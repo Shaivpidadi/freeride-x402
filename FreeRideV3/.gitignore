@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ruff / mypy
+.ruff_cache/
+.mypy_cache/
+
+# FreeRide local state (must NEVER be committed)
+.freeride/
+freeride.egg-info/
+
+# wrangler / Cloudflare Workers local caches and state — must never be committed
+.wrangler/
+.dev.vars
+
+# Operator-specific wrangler config — real D1 database_id is per-account.
+# wrangler.example.toml is the committed placeholder; copy to wrangler.toml
+# locally and fill in your own values.
+services/telemetry/wrangler.toml
+/.env
+
+# Skill installs via npx (per-developer choice, not vendored)
+.agents/
+skills-lock.json
+skills/
+
+# Local CI credentials — never commit
+tests/ci/.env*
+
+# Hedera x402 signer deps (installed via `cd scripts && npm install`)
+scripts/node_modules/
+uv.lock

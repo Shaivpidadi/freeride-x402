@@ -1,0 +1,120 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "freeride-gateway"
+dynamic = ["version"]
+description = "Ollama for free cloud inference. Local OpenAI-compatible gateway routing across OpenRouter, Groq, NVIDIA NIM, Cloudflare Workers AI, HuggingFace, Cerebras, and your own Ollama with automatic failover."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Shaishav Pidadi", email = "shaivpidadi@gmail.com" }]
+keywords = [
+    "ai",
+    "llm",
+    "openai-compatible",
+    "ai-gateway",
+    "free-tier",
+    "openrouter",
+    "groq",
+    "nvidia-nim",
+    "cloudflare-workers-ai",
+    "huggingface",
+    "proxy",
+    "gateway",
+    "failover",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: FastAPI",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+]
+dependencies = [
+    # Pin httpx <1.0: the 1.0 dev releases dropped the full exception
+    # hierarchy (HTTPStatusError, TimeoutException, RequestError).
+    # We can move to >=1 once it stabilizes AND we update the
+    # error-classification paths in providers/openrouter.py and
+    # providers/nvidia_nim.py.
+    "httpx>=0.27,<1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "pytest-httpx>=0.30",
+    "pytest-timeout>=2.3",
+    "ruff>=0.6",
+]
+e2e = [
+    "openai>=2",
+]
+
+[project.scripts]
+# The single `freeride` command users type is the agent launcher (shipped
+# with the agent), which forwards gateway subcommands here. Installing this
+# CLI as `freeride` too would make the launcher re-enter itself.
+freeride-gateway = "freeride.cli.main:main"
+freeride-watcher = "freeride.cli.watcher:main"
+
+[project.urls]
+Homepage = "https://free-ride.xyz"
+Repository = "https://github.com/Shaivpidadi/FreeRideV3"
+Issues = "https://github.com/Shaivpidadi/FreeRideV3/issues"
+Documentation = "https://github.com/Shaivpidadi/FreeRideV3/tree/main/docs"
+Changelog = "https://github.com/Shaivpidadi/FreeRideV3/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "freeride/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["freeride"]
+# The Hedera x402 signer is a Node script invoked by the daemon. It must
+# ship inside the package: a wheel install has no repo `scripts/` dir, so
+# resolving it relative to the source tree fails for real installs.
+artifacts = ["freeride/x402/*.mjs", "freeride/x402/package.json", "freeride/x402/demo-wallet.json"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+# Ruff 0.16 expanded the default set from ~59 rules to 413. This repo
+# never opted into that sweep; keep the pre-0.16 Flake8 E/F defaults
+# so `pip install ruff>=0.6` on CI stays a syntax/import check.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# e2e tests are slow and need real API keys + agent installs.
+# Default suite skips them; opt-in via `pytest -m e2e` or `FREERIDE_E2E=1`.
+addopts = "-m 'not e2e'"
+markers = [
+    "e2e: end-to-end tests against real agents and live providers (slow, network-bound)",
+]
+# tests/ci/ is the Daytona-sandbox CI matrix (test_normal_flow.py etc.).
+# Those are STANDALONE Python scripts that happen to start with test_;
+# they're invoked directly (`python tests/ci/test_<phase>.py`), NOT via
+# pytest, and they import the daytona SDK which isn't a unit-test dep.
+# Pytest would otherwise auto-collect them and fail at import / fixture-
+# resolution time.
+norecursedirs = ["tests/ci"]

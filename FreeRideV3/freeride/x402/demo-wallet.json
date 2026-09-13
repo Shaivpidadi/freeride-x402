@@ -1,0 +1,10 @@
+{
+  "note": "Bundled DEMO payer for the Hedera x402 cash lane. TESTNET ONLY.",
+  "warning": "This key ships in the repo. Anyone can spend it. Never fund it beyond a demo, and never reuse it on mainnet.",
+  "network": "hedera:testnet",
+  "account_id": "0.0.10514042",
+  "evm_address": "0xf9644093e89e97f3afb73dd22692af3180b6286a",
+  "private_key_hex": "0xd0c1b86cbaea02edfc7ac988f54a77d7b828add0e000c7dac243d92323ced726",
+  "funded_hbar": 5,
+  "created": "2026-09-13T01:04:29.664Z"
+}

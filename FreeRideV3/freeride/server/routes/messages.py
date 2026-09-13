@@ -1,0 +1,653 @@
+"""``POST /v1/messages`` — Anthropic Messages API compatibility shim.
+
+Lets Anthropic-format clients (Claude Code, ``@anthropic-ai/sdk``,
+LiteLLM with the Anthropic adapter, etc.) talk to FreeRide as if it
+were ``api.anthropic.com``. Internally we translate the request into
+OpenAI Chat Completions, dispatch it through the same provider
+failover machinery `/v1/chat/completions` uses, and translate the
+response back into Anthropic shape on the way out.
+
+**Phase 1 (shipped):** non-streaming chat, system prompt hoisting,
+text content blocks, stop_reason and usage mapping, tool-definition
+request-side translation.
+
+**Phase 2 (this commit):** streaming SSE. We pre-flight the first
+chunk through ``try_stream_with_failover`` (same buffer-first-chunk
+guarantee the chat route uses), then a translator generator turns
+OpenAI streaming chunks into Anthropic SSE events
+(message_start / content_block_start / content_block_delta /
+content_block_stop / message_delta / message_stop). Text-only blocks
+in this phase; tool_use streaming lands in Phase 3.
+
+**Phase 3 (deferred):** tool_use blocks in messages, tool_result
+handling, the ``input_json_delta`` partial-JSON streaming state
+machine.
+
+The failover walk lives in :mod:`freeride.core.failover` so this
+route and the other protocol shims stay in lockstep.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from typing import AsyncIterator
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
+
+from freeride.core.anthropic_passthrough import relay_to_anthropic
+from freeride.core.anthropic_schema import AnthropicMessagesRequest
+from freeride.core.anthropic_translate import (
+    UnsupportedContentBlock,
+    anthropic_to_openai_request,
+    openai_to_anthropic_response,
+    request_unsupported_for_phase_1,
+    stream_openai_to_anthropic,
+)
+from freeride.core.auto_model import is_auto_model, resolve_auto_model
+from freeride.core.cooldown import KeyCooldown
+from freeride.core.events import emit as emit_event
+from freeride.core.events import new_request_id
+from freeride.core.failover import (
+    FailoverContext,
+    apply_force_provider,
+    build_503_detail,
+    resolve_provider_chain,
+    try_call_with_failover,
+    try_stream_with_failover,
+)
+from freeride.core.health import sort_by_health
+from freeride.core.model_router import decide as decide_route
+from freeride.core.model_router import preset_provider_order
+from freeride.core.provider import Provider
+from freeride.server.routes.models import get_or_fetch_catalog, invalidate_catalog
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.post("/v1/messages")
+async def messages(request: Request):
+    """Anthropic-format ``POST /v1/messages`` endpoint.
+
+    Two execution paths, chosen by the model id + inbound auth:
+
+    - **Passthrough** — ``claude-*`` model id + inbound auth header
+      (Authorization or x-api-key). The request body is relayed
+      verbatim to ``api.anthropic.com``; FreeRide stays invisible.
+      Native Claude Code subscriptions work untouched.
+    - **Free route** — ``freeride/*`` model ids, or ``claude-*`` with
+      no auth, or anything else. Translates to OpenAI shape, dispatches
+      through provider failover, translates back to Anthropic shape.
+      All of Phases 1–3 land here.
+
+    The decision is made by
+    :func:`freeride.core.model_router.decide`. We peek at the raw
+    body bytes once to extract ``model`` (and ``stream`` for the
+    passthrough), then either relay raw or parse + translate.
+    """
+    request_id = new_request_id()
+    body_bytes = await request.body()
+    inbound_headers = dict(request.headers)
+
+    # Cheap peek to extract the model id without full Pydantic
+    # validation. For passthrough we MUST NOT validate — that would
+    # risk dropping fields Anthropic accepts that our schema hasn't
+    # caught up to. For the free route we validate below.
+    try:
+        peek = json.loads(body_bytes) if body_bytes else {}
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Request body is not valid JSON.",
+                },
+            },
+        )
+    if not isinstance(peek, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "Request body must be a JSON object.",
+                },
+            },
+        )
+
+    model_id = peek.get("model") or ""
+    decision = decide_route(model_id, inbound_headers)
+
+    # ─── claude-code caller detected? pin to a code+tools model ────
+    # Claude Code requires (a) tool/function calling, (b) code-quality
+    # responses, (c) acceptance of large request bodies (~110KB).
+    # Many otherwise-good free models fail one of these:
+    #   - openai/gpt-oss-120b → emits text but rarely tool_calls
+    #   - groq/llama-3.3-70b-versatile → 413 "payload too large"
+    #   - meta-llama/llama-3.3-70b-instruct:free → 429 often
+    # Probed live 2026-05-12 against this user's key. openrouter/free
+    # consistently returns 200 + tool_calls block.
+    #
+    # Pin behavior: when User-Agent is claude-cli AND model is any
+    # freeride/* id (free, fast, quality, coding), pin to a known
+    # tools-capable model on a body-size-friendly provider. Claude
+    # Code WITHOUT tool calls is useless — the model would describe
+    # what it would do as text and the user sees no actual file
+    # writes / bash commands. We respect the user's preset choice as
+    # a *hint*, but tool support is non-negotiable for claude-cli.
+    #
+    # Override via env: FREERIDE_CLAUDE_CODE_MODEL,
+    # FREERIDE_CLAUDE_CODE_PROVIDER.
+    ua = inbound_headers.get("user-agent", "").lower()
+    is_claude_cli = ua.startswith("claude-cli/") or "claude-code" in ua
+    claude_code_pin: tuple[str, str] | None = None  # (model_id, provider_name)
+    if is_claude_cli and decision.mode == "free":
+        pinned_model = os.environ.get(
+            "FREERIDE_CLAUDE_CODE_MODEL", "openrouter/free"
+        )
+        pinned_provider = os.environ.get(
+            "FREERIDE_CLAUDE_CODE_PROVIDER", "openrouter"
+        )
+        claude_code_pin = (pinned_model, pinned_provider)
+        emit_event(
+            "messages_claude_cli_pin",
+            request_id=request_id,
+            pinned_model=pinned_model,
+            pinned_provider=pinned_provider,
+            original_preset=decision.preset,
+            reason=(
+                f"claude-cli + freeride/{decision.preset} → pinning to a "
+                "tools-capable code model (tool calling is non-negotiable)"
+            ),
+            endpoint="messages",
+        )
+
+    emit_event(
+        "messages_routing_decision",
+        request_id=request_id,
+        model=model_id,
+        mode=decision.mode,
+        preset=decision.preset,
+        reason=decision.reason,
+        endpoint="messages",
+    )
+
+    # ─── passthrough ───────────────────────────────────────────────
+    # Relay to api.anthropic.com verbatim. Body bytes, auth header,
+    # and a small allowlist of Anthropic-specific headers forward
+    # unchanged. The native subscription experience is preserved.
+    if decision.mode == "passthrough":
+        return await relay_to_anthropic(
+            body_bytes=body_bytes,
+            inbound_headers=inbound_headers,
+            request_id=request_id,
+            model_id=model_id,
+        )
+
+    # ─── free route ────────────────────────────────────────────────
+    # Validate via Pydantic now. We deferred this so passthrough
+    # could ship the raw body without risk of re-serialization
+    # losing fields.
+    try:
+        body = AnthropicMessagesRequest.model_validate(peek)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": f"Request body failed validation: {e!s}",
+                },
+            },
+        )
+
+    # Gate features we haven't shipped (images, documents). Tools
+    # and streaming are supported.
+    block_reason = request_unsupported_for_phase_1(body)
+    if block_reason is not None:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "not_implemented",
+                    "message": (
+                        f"FreeRide /v1/messages: {block_reason}. Track Phase "
+                        f"progress at https://github.com/Shaivpidadi/FreeRideV3."
+                    ),
+                },
+            },
+        )
+
+    requested_model = body.model
+
+    # Translate to OpenAI shape. UnsupportedContentBlock surfaces as a
+    # 400 — caller sent a content type we can't handle.
+    try:
+        openai_request = anthropic_to_openai_request(body)
+    except UnsupportedContentBlock as e:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": str(e)},
+            },
+        )
+
+    # ─── borrow the chat-route's failover plumbing ─────────────────
+    # Health-rank, force-provider override, build chain — all the
+    # same shape as /v1/chat/completions so smart-routing, cooldown,
+    # and per-key health all apply uniformly.
+    providers: list[Provider] = sort_by_health(list(request.app.state.providers))
+
+    # If we pinned a claude-code-specific model (see decision block
+    # above), rewrite the OpenAI request's model field NOW so the
+    # smart-router's auto resolution doesn't fire downstream. We also
+    # narrow the provider list to the pinned provider so failover
+    # doesn't try the wrong upstream first.
+    if claude_code_pin is not None:
+        openai_request.model = claude_code_pin[0]
+        pinned_provider_name = claude_code_pin[1]
+        narrowed = [p for p in providers if p.name == pinned_provider_name]
+        if narrowed:
+            providers = narrowed
+        # If the pinned provider isn't registered we keep the full
+        # list so the existing failover machinery still finds *some*
+        # provider for the model id.
+
+    providers, forced = apply_force_provider(providers, request)
+    if forced is not None and not providers:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        f"X-FreeRide-Force-Provider={forced!r} is not "
+                        "a registered provider."
+                    ),
+                    "registered": [p.name for p in request.app.state.providers],
+                },
+            },
+        )
+
+    ctx = FailoverContext(request_id=request_id)
+    emit_event(
+        "request_start",
+        request_id=ctx.request_id,
+        model=openai_request.model,
+        streaming=body.stream,
+        endpoint="messages",
+    )
+
+    if not providers:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": "No provider plugins registered.",
+                    "request_id": ctx.request_id,
+                },
+            },
+        )
+
+    cooldown = KeyCooldown()
+
+    # ─── preset → provider re-order + auto-resolution scope ────────
+    # For freeride/fast|quality|coding, two things change:
+    #
+    #   1. The failover chain is re-ordered so preferred providers
+    #      come first (existing health-rank fills ties).
+    #   2. Auto-model resolution is RESTRICTED to preferred providers
+    #      only. Without this restriction, the smart-router would
+    #      pick the highest-ranked model across the whole catalog —
+    #      often a groq-specific id — and the failover would try the
+    #      preferred provider first, get a MODEL_NOT_FOUND, and fall
+    #      back to groq anyway. That defeats the preset's purpose.
+    #
+    # ``auto_resolution_providers`` is what gets passed to the
+    # catalog fetch + resolver. ``providers`` (the full preset-
+    # ordered chain) is what gets used for the failover loop, so a
+    # rare key failure on a preferred provider still has the tail
+    # as a last-resort fallback.
+    preferred = preset_provider_order(decision.preset)
+    auto_resolution_providers = providers
+    if preferred:
+        preferred_set = set(preferred)
+        head = [p for name in preferred for p in providers if p.name == name]
+        tail = [p for p in providers if p.name not in preferred_set]
+        providers = head + tail
+        # Typed preset: restrict catalog ranking to preferred
+        # providers (head) so the resolved model id is actually
+        # available there. If none of the preferred providers are
+        # registered/healthy, fall back to the full list rather
+        # than 503 — better degraded than down.
+        auto_resolution_providers = head or providers
+        # The id "freeride/<preset>" isn't a real model on any
+        # provider — rewrite it to "auto" so the existing smart-
+        # router picks something. freeride/free already maps to
+        # auto via the _AUTO_SENTINELS frozenset, but typed
+        # presets don't.
+        #
+        # SKIP when claude_code_pin is set: the pin already
+        # rewrote openai_request.model to a specific tools-capable
+        # id, and we MUST NOT clobber that back to "auto" (which
+        # would trigger the smart-router roulette and pick a
+        # model that doesn't reliably emit tool_calls).
+        if claude_code_pin is None:
+            openai_request.model = "auto"
+        emit_event(
+            "messages_preset_applied",
+            request_id=ctx.request_id,
+            preset=decision.preset,
+            preferred_order=list(preferred),
+            auto_resolution_restricted=bool(head),
+            endpoint="messages",
+        )
+    elif decision.preset == "free" and claude_code_pin is None:
+        # Bare "freeride/free" — rewrite to "auto" so the smart
+        # router doesn't see an unknown model id. No restriction;
+        # full catalog is fair game.
+        #
+        # Skipped when claude_code_pin is set: the pin already
+        # overwrote openai_request.model with a specific id, and we
+        # do NOT want to clobber that back to "auto".
+        openai_request.model = "auto"
+
+    # ─── strip tools when routing to free ──────────────────────────
+    # Claude Code 2.x sends ~70 tools in every request (Agent, Read,
+    # Write, Bash, Edit, …). Some free providers reject the request
+    # outright (groq returns 413 "payload too large") or quietly fail
+    # in shapes our error classifier doesn't catch. For non-claude-cli
+    # callers the user explicitly opted into /model freeride/* asking
+    # for a quick text answer — dropping tools is fine.
+    #
+    # EXCEPTION: claude-cli ALWAYS keeps tools, regardless of preset.
+    # Claude Code is useless without tools — the model would emit
+    # fake JSON-shaped text describing tool calls instead of real
+    # tool_use blocks. Verified live 2026-05-12: this strip was the
+    # reason `freeride/coding` (and `/fast`, `/quality`) responses
+    # came back as plain text descriptions of commands rather than
+    # claude actually invoking Bash/Write/etc.
+    if (
+        decision.mode == "free"
+        and not is_claude_cli
+        and (openai_request.tools or openai_request.tool_choice)
+    ):
+        n_dropped = len(openai_request.tools or [])
+        openai_request.tools = None
+        openai_request.tool_choice = None
+        emit_event(
+            "messages_free_tools_stripped",
+            request_id=ctx.request_id,
+            n_dropped=n_dropped,
+            preset=decision.preset,
+            endpoint="messages",
+        )
+
+    chain = resolve_provider_chain(providers)
+    if not chain:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": (
+                        "No providers have usable (non-cooling) API keys "
+                        "for this request."
+                    ),
+                    "request_id": ctx.request_id,
+                    "suggestion": (
+                        "Set a provider env var (e.g. OPENROUTER_API_KEY) "
+                        "or wait for cooldowns to expire."
+                    ),
+                },
+            },
+        )
+
+    # auto-model resolution — same logic as the chat route, but
+    # scoped to ``auto_resolution_providers`` when a typed preset
+    # is in play (set above). Without the scoping, a typed preset
+    # only re-orders the chain; here it also restricts WHICH
+    # provider catalogs the resolver considers.
+    if is_auto_model(openai_request.model):
+        catalog = await get_or_fetch_catalog(auto_resolution_providers, group=True)
+        resolved_id, resolved_provider = resolve_auto_model(
+            auto_resolution_providers, catalog
+        )
+        if resolved_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": (
+                            "model='auto' was requested but no provider has "
+                            "a usable model + key right now."
+                        ),
+                        "request_id": ctx.request_id,
+                    },
+                },
+            )
+        openai_request.model = resolved_id
+        emit_event(
+            "auto_model_resolved",
+            request_id=ctx.request_id,
+            resolved_model=resolved_id,
+            resolved_provider=resolved_provider,
+            endpoint="messages",
+        )
+
+    # ─── streaming branch — Phase 2 ────────────────────────────────
+    # Reuses chat.py's try_stream_with_failover for the
+    # buffer-first-chunk-then-fail-over guarantee. Translation is
+    # done by stream_openai_to_anthropic which consumes the
+    # ChatStreamEvent iterator and emits Anthropic-shape SSE events.
+    if body.stream:
+        return await _build_anthropic_stream_response(
+            chain=chain,
+            openai_request=openai_request,
+            cooldown=cooldown,
+            ctx=ctx,
+            requested_model=requested_model,
+        )
+
+    # ─── failover loop — non-streaming ─────────────────────────────
+    chosen_provider, response_obj = await try_call_with_failover(
+        chain,
+        cooldown,
+        ctx,
+        call=lambda p, k: p.forward_chat(
+            openai_request, openai_request.model, k
+        ),
+        model=openai_request.model,
+        extra_event={"endpoint": "messages"},
+        on_model_not_found=invalidate_catalog,
+    )
+
+    if response_obj is None or chosen_provider is None:
+        # Surface the 503 in Anthropic shape so SDK clients see a
+        # familiar error envelope.
+        raw = build_503_detail(ctx)
+        raw_err = raw.get("error", {})
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": raw_err.get("message", "All providers failed."),
+                    "request_id": ctx.request_id,
+                    "tried": raw_err.get("tried"),
+                    "suggestion": raw_err.get("suggestion"),
+                },
+            },
+        )
+
+    # Translate the response back into Anthropic shape. Echo the
+    # caller's requested model id (e.g. ``claude-sonnet-4-6``) so SDK
+    # clients see a familiar string; the actual routed provider is
+    # exposed via the ``X-FreeRide-Provider`` header.
+    anthropic_response = openai_to_anthropic_response(response_obj, requested_model)
+
+    # Local counter bump for the hourly beacon. The upstream response
+    # is still OpenAI-compat (we translate to Anthropic on the way out),
+    # so extract usage in OpenAI shape — prompt_tokens → input,
+    # completion_tokens → output.
+    from freeride.core.telemetry import record_request
+    from freeride.core.usage import Kind, extract_usage
+
+    msg_usage = extract_usage(Kind.OPENAI, response_obj.model_dump())
+    record_request(
+        input_tokens=msg_usage.input,
+        output_tokens=msg_usage.output,
+        provider=chosen_provider.name,
+    )
+
+    return JSONResponse(
+        content=anthropic_response.model_dump(exclude_none=True),
+        headers={
+            "X-FreeRide-Provider": chosen_provider.name,
+            "X-FreeRide-Request-Id": ctx.request_id,
+        },
+    )
+
+
+# ─── streaming response builder ────────────────────────────────────
+
+
+async def _build_anthropic_stream_response(
+    *,
+    chain: list,
+    openai_request,
+    cooldown: KeyCooldown,
+    ctx: FailoverContext,
+    requested_model: str,
+) -> StreamingResponse:
+    """Pre-flight first chunk through the chat-route's
+    ``try_stream_with_failover``, then wrap the resulting
+    ChatStreamEvent iterator in a translator that emits Anthropic SSE.
+
+    The buffer-first-chunk semantics matter: if the first upstream
+    chunk fails, we can still failover to a different provider /
+    key. Once any byte has shipped to the client, we're committed —
+    a mid-stream upstream failure becomes a truncated stream from
+    the client's perspective (rare in practice; documented limit).
+    """
+    chosen, first_event, rest_or_err = await try_stream_with_failover(
+        chain, openai_request, cooldown, ctx,
+        extra_event={"endpoint": "messages"},
+        on_model_not_found=invalidate_catalog,
+    )
+    if chosen is None:
+        # All providers failed before producing a first chunk.
+        emit_event(
+            "request_failed",
+            request_id=ctx.request_id,
+            phase="pre_first_chunk",
+            tried=[t.provider for t in ctx.tried],
+            endpoint="messages",
+        )
+        raw = build_503_detail(ctx)
+        raw_err = raw.get("error", {})
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": raw_err.get("message", "All providers failed."),
+                    "request_id": ctx.request_id,
+                    "tried": raw_err.get("tried"),
+                    "suggestion": raw_err.get("suggestion"),
+                },
+            },
+        )
+
+    rest_iter = rest_or_err  # AsyncIterator[ChatStreamEvent]
+
+    # Telemetry capture — same idea as the chat route. The upstream is
+    # OpenAI-compat (only the response gets translated to Anthropic
+    # SSE on the way out), so the final usage chunk has OpenAI shape.
+    # We grab whichever event carries a usage block last and ship its
+    # values to ``record_request`` after the stream completes.
+    from freeride.core.usage import Kind, extract_usage
+
+    last_usage_box = [extract_usage(Kind.OPENAI, first_event.model_dump())]
+
+    async def merged_chunks() -> AsyncIterator:
+        """Re-thread the first event back in front of the rest, so the
+        translator sees a single contiguous stream."""
+        yield first_event
+        try:
+            async for evt in rest_iter:
+                u = extract_usage(Kind.OPENAI, evt.model_dump())
+                if u.has_any:
+                    last_usage_box[0] = u
+                yield evt
+        except Exception as e:  # noqa: BLE001
+            # Mid-stream upstream error after the first chunk shipped.
+            # We can't undo bytes already on the wire, so we let the
+            # translator complete its event sequence (it'll emit a
+            # message_stop with whatever state it has) and log.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "messages: mid-stream upstream error after first chunk: %s", e
+            )
+            emit_event(
+                "request_mid_stream_error",
+                request_id=ctx.request_id,
+                provider=chosen.name,
+                error=str(e)[:200],
+                endpoint="messages",
+            )
+
+    async def emit_anthropic_sse() -> AsyncIterator[bytes]:
+        async for byte_chunk in stream_openai_to_anthropic(
+            merged_chunks(), request_model=requested_model
+        ):
+            yield byte_chunk
+        final_usage = last_usage_box[0]
+        emit_event(
+            "request_complete",
+            request_id=ctx.request_id,
+            provider=chosen.name,
+            streaming=True,
+            endpoint="messages",
+            input_tokens=final_usage.input,
+            output_tokens=final_usage.output,
+        )
+        from freeride.core.telemetry import record_request
+
+        record_request(
+            input_tokens=final_usage.input,
+            output_tokens=final_usage.output,
+            provider=chosen.name,
+        )
+
+    return StreamingResponse(
+        emit_anthropic_sse(),
+        media_type="text/event-stream",
+        headers={
+            "X-FreeRide-Provider": chosen.name,
+            "X-FreeRide-Request-Id": ctx.request_id,
+            # Anthropic clients sometimes check for these — match the
+            # behavior of api.anthropic.com closely.
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )

@@ -1,0 +1,43 @@
+name = "freeride-telemetry"
+main = "src/worker.js"
+compatibility_date = "2026-04-01"
+
+# Keep the *.workers.dev URL active as a fallback so the worker is
+# reachable even before / outside of the custom-domain DNS path.
+workers_dev = true
+
+# Storage moved off Cloudflare D1 onto Neon Postgres on 2026-05-28
+# so the marketing site, future SDK callers, and the Worker all share
+# one source of truth. Connection string lives in env.DATABASE_URL,
+# never in the toml:
+#
+#   wrangler secret put DATABASE_URL    # production (encrypted)
+#   echo 'DATABASE_URL=postgresql://...' > .dev.vars   # `wrangler dev`
+#
+# Both `wrangler.toml` and `.dev.vars` are gitignored — paste the real
+# values once and they stay local.
+
+# Public custom domains.
+#
+# Hostname split as of 2026-05:
+#   - free-ride.xyz (apex) is owned by the Vercel-hosted marketing site.
+#   - api.free-ride.xyz is the canonical hostname for this Worker.
+#     Routes: /install.sh, /v1/beacon, /v1/stats, /health.
+#   - telemetry.free-ride.xyz is kept as an alias so installs running
+#     pre-0.3.0a9 (which hard-coded that hostname into the beacon URL)
+#     keep working without a re-install.
+[[routes]]
+pattern = "api.free-ride.xyz"
+custom_domain = true
+
+[[routes]]
+pattern = "telemetry.free-ride.xyz"
+custom_domain = true
+
+# Cron trigger: refresh the OpenRouter app-level token aggregate every
+# hour. The handler scrapes the public app activity pages for both V2
+# (Shaivpidadi/FreeRide) and V3 (Shaivpidadi/FreeRideV3) and stores the
+# combined total in the openrouter_aggregate Neon table for /v1/stats
+# to surface.
+[triggers]
+crons = ["0 * * * *"]
