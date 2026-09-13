@@ -90,7 +90,7 @@ packages = ["freeride"]
 # The Hedera x402 signer is a Node script invoked by the daemon. It must
 # ship inside the package: a wheel install has no repo `scripts/` dir, so
 # resolving it relative to the source tree fails for real installs.
-artifacts = ["freeride/x402/*.mjs", "freeride/x402/package.json"]
+artifacts = ["freeride/x402/*.mjs", "freeride/x402/package.json", "freeride/x402/demo-wallet.json"]
 
 [tool.ruff]
 line-length = 100

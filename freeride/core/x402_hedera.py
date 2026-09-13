@@ -370,12 +370,55 @@ def paid_openrouter_key(cfg: X402Config) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def load_payer_credentials() -> tuple[str | None, str | None]:
-    """Return (account_id, private_key) from env aliases.
+DEMO_WALLET_FILENAME = "demo-wallet.json"
 
-    Preferred: ``FREERIDE_X402_PAYER_ACCOUNT`` / ``FREERIDE_X402_PAYER_KEY``.
-    Also accepts ``HEDERA_ACCOUNT_ID`` / ``HEDERA_PRIVATE_KEY``.
+
+def _demo_wallet_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "x402" / DEMO_WALLET_FILENAME
+
+
+def bundled_demo_payer() -> tuple[str | None, str | None]:
+    """The demo payer shipped with the package, if one is bundled.
+
+    Ships so a judge can watch the cash lane work without creating a Hedera
+    account first. It is testnet-only and its key is public by definition, so
+    it is a fallback, never a preference: a real payer in the environment
+    always wins, and `freeride wallet status` says which one is in use.
     """
+    path = _demo_wallet_path()
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning("bundled demo wallet is unreadable (%s): %s", path, e)
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    account = str(data.get("account_id") or "").strip() or None
+    key = str(data.get("private_key_hex") or data.get("private_key_der") or "").strip() or None
+    return account, key
+
+
+def demo_wallet_in_use() -> bool:
+    """True when the payer being used is the bundled demo one."""
+    if _env_payer() != (None, None):
+        return False
+    account, key = bundled_demo_payer()
+    return bool(account and key) and _demo_wallet_allowed()
+
+
+def _demo_wallet_allowed() -> bool:
+    """Off only when explicitly disabled, so the demo works out of the box."""
+    return os.environ.get("FREERIDE_X402_DEMO_WALLET", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _env_payer() -> tuple[str | None, str | None]:
     account = (
         os.environ.get("FREERIDE_X402_PAYER_ACCOUNT", "").strip()
         or os.environ.get("HEDERA_ACCOUNT_ID", "").strip()
@@ -386,7 +429,30 @@ def load_payer_credentials() -> tuple[str | None, str | None]:
         or os.environ.get("HEDERA_PRIVATE_KEY", "").strip()
         or None
     )
-    return account, key
+    return (account, key) if (account and key) else (None, None)
+
+
+def load_payer_credentials() -> tuple[str | None, str | None]:
+    """Return (account_id, private_key) from env aliases.
+
+    Preferred: ``FREERIDE_X402_PAYER_ACCOUNT`` / ``FREERIDE_X402_PAYER_KEY``.
+    Also accepts ``HEDERA_ACCOUNT_ID`` / ``HEDERA_PRIVATE_KEY``.
+    """
+    account, key = _env_payer()
+    if account and key:
+        return account, key
+    if not _demo_wallet_allowed():
+        return None, None
+    demo_account, demo_key = bundled_demo_payer()
+    if demo_account and demo_key:
+        logger.warning(
+            "Using the BUNDLED DEMO payer %s (testnet). Its key ships in the package "
+            "and is public. Run `freeride wallet setup` for your own, or set "
+            "FREERIDE_X402_DEMO_WALLET=0 to refuse it.",
+            demo_account,
+        )
+        return demo_account, demo_key
+    return None, None
 
 
 def has_payer_credentials() -> bool:

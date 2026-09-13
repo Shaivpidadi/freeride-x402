@@ -61,6 +61,42 @@ Aliases accepted for payer env:
 | `FREERIDE_X402_PAYER_ACCOUNT` | `HEDERA_ACCOUNT_ID` |
 | `FREERIDE_X402_PAYER_KEY` | `HEDERA_PRIVATE_KEY` |
 
+## Agents that spend (not just inference)
+
+The same wallet pays for anything else a local agent hits a 402 on. The agent
+posts the challenge; the daemon signs and settles; the payer key never leaves
+this process.
+
+```bash
+freeride wallet budget --max-amount 0.05hbar --agent-pay on
+curl -X POST localhost:11343/v1/_freeride/x402/pay \
+  -d '{"paymentRequirements": {...}, "resourceUrl": "https://..."}'
+# -> { "paymentSignature": "...", "transaction": "0.0.x@...", ... }
+```
+
+Agent payments are **off** until you turn them on: a wallet that pays for
+inference does not implicitly hand every local process a spending limit.
+`GET /v1/_freeride/x402/policy` reports what is allowed without exposing the key.
+
+| Guard | Env | Default |
+|-------|-----|---------|
+| Off unless enabled | `FREERIDE_X402_AGENT_PAY_ENABLED` | off |
+| Per-payment ceiling | `FREERIDE_X402_MAX_AMOUNT` | 1 HBAR |
+| Payee allowlist | `FREERIDE_X402_ALLOWED_PAYEES` | any |
+| Network | must match `FREERIDE_X402_NETWORK` | `hedera:testnet` |
+
+`eve-bot/` builds on this: its Bots get a per-job budget and an approval card
+above it. See `eve-bot/demo/README.md`.
+
+## Bundled demo wallet
+
+A funded testnet payer ships in the package so the cash lane works with no
+setup at all. It is a fallback, never a preference — a payer in the
+environment always wins, `freeride wallet status` says when the demo one is in
+use, and `FREERIDE_X402_DEMO_WALLET=0` refuses it.
+
+Its key is public by definition. Testnet only, demo amounts only.
+
 ## x402 v2 HTTP wire
 
 | Step | Header | Value |

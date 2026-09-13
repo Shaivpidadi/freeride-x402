@@ -31,6 +31,9 @@ def _reset(monkeypatch: pytest.MonkeyPatch):
     for key in list(os.environ):
         if key.startswith("FREERIDE_X402") or key.startswith("HEDERA_"):
             monkeypatch.delenv(key, raising=False)
+    # Same reason as tests/test_x402_hedera.py: the bundled demo payer would
+    # otherwise satisfy "no payer configured".
+    monkeypatch.setenv("FREERIDE_X402_DEMO_WALLET", "0")
     yield
     ProviderHealth.reset()
 

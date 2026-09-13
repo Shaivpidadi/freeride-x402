@@ -264,6 +264,43 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Where to write the .env file (default: ~/.freeride/.env)",
     )
+    p_wsetup.add_argument(
+        "--demo",
+        action="store_true",
+        help="Use the bundled demo payer instead of prompting (testnet only)",
+    )
+    p_wbudget = wallet_sub.add_parser(
+        "budget",
+        help="Show or change what agents may spend from this wallet",
+    )
+    p_wbudget.add_argument(
+        "--max-amount",
+        default=None,
+        help="Per-payment ceiling in tinybars, or an amount like 0.01hbar",
+    )
+    p_wbudget.add_argument(
+        "--allow-payee",
+        action="append",
+        default=None,
+        metavar="ACCOUNT",
+        help="Restrict payments to this account (repeatable). Use --any-payee to clear.",
+    )
+    p_wbudget.add_argument(
+        "--any-payee",
+        action="store_true",
+        help="Remove the payee allowlist so any account may be paid",
+    )
+    p_wbudget.add_argument(
+        "--agent-pay",
+        choices=["on", "off"],
+        default=None,
+        help="Let local agents spend from this wallet (default: off)",
+    )
+    p_wbudget.add_argument(
+        "--out",
+        default=None,
+        help="Where to write the .env file (default: ~/.freeride/.env)",
+    )
 
     return parser
 
