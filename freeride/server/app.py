@@ -238,6 +238,7 @@ def create_app(
     from freeride.server.routes import fx as fx_route
     from freeride.server.routes import gemini as gemini_route
     from freeride.server.routes import messages as messages_route
+    from freeride.server.routes import x402 as x402_route
     from freeride.server.routes import models as models_route
 
     app.include_router(models_route.router)
@@ -247,5 +248,6 @@ def create_app(
     app.include_router(gemini_route.router)
     app.include_router(codex_route.router)
     app.include_router(fx_route.router)
+    app.include_router(x402_route.router)
 
     return app
