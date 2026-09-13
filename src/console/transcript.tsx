@@ -12,6 +12,13 @@ import type { RoomSnapshot, RoomStore, StepsItem, TimelineItem } from "./room-st
 import { suggestionsFor } from "./suggestions";
 import type { Member } from "./types";
 
+/** HashScan link for a settled payment, when the event carries one. */
+function explorerUrl(event: { kind: string; data?: Record<string, unknown> }): string | null {
+  if (event.kind !== "job.paid") return null;
+  const explorer = event.data?.explorer;
+  return typeof explorer === "string" && explorer.startsWith("https://") ? explorer : null;
+}
+
 const STEP_WORDS: Readonly<Record<string, string>> = {
   "job.assigned": "Assigned",
   "job.started": "Started",
@@ -243,10 +250,28 @@ function StepsBlock({
           {block.events.map((event) => (
             <li
               key={event.id}
-              className={event.kind === "job.failed" ? "bad" : event.kind === "job.done" ? "good" : undefined}
+              className={
+                event.kind === "job.failed"
+                  ? "bad"
+                  : event.kind === "job.done" || event.kind === "job.paid"
+                    ? "good"
+                    : undefined
+              }
             >
               <span className="k">{STEP_WORDS[event.kind] ?? "Did"}</span>
-              <span>{event.text}</span>
+              <span>
+                {event.text}
+                {/* A settled payment is the one step worth being able to
+                    verify outside this app, so it carries its receipt. */}
+                {explorerUrl(event) === null ? null : (
+                  <>
+                    {" "}
+                    <a className="tx" href={explorerUrl(event) ?? ""} target="_blank" rel="noreferrer">
+                      view on HashScan
+                    </a>
+                  </>
+                )}
+              </span>
               <time>{clock(new Date(event.at))}</time>
             </li>
           ))}

@@ -211,6 +211,9 @@ button:disabled { cursor: default; opacity: 0.5; }
 .steps-list li time { color: var(--faint); font-size: 10.5px; flex: none; font-variant-numeric: tabular-nums; }
 .steps-list li.bad .k { color: var(--bad); }
 .steps-list li.good .k { color: var(--ok); }
+/* A payment's receipt: legible, not loud — the settlement is the point. */
+.steps-list li .tx { color: var(--ok); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.steps-list li .tx:hover { text-decoration: none; opacity: 0.8; }
 
 .card {
   align-self: flex-start; width: min(100%, 440px); margin: 8px 0;
