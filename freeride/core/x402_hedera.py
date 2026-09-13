@@ -61,6 +61,7 @@ class X402Config:
     resource_url: str | None
     paid_openrouter_api_key: str | None
     dry_run: bool
+    force_paid: bool
 
     @property
     def ready(self) -> bool:
@@ -71,6 +72,13 @@ class X402Config:
 def load_x402_config() -> X402Config:
     """Load x402 settings from process env."""
     enabled = os.environ.get("FREERIDE_X402_ENABLED", "").strip() in (
+        "1",
+        "true",
+        "TRUE",
+        "yes",
+        "YES",
+    )
+    force_paid = os.environ.get("FREERIDE_X402_FORCE_PAID", "").strip() in (
         "1",
         "true",
         "TRUE",
@@ -106,6 +114,7 @@ def load_x402_config() -> X402Config:
         resource_url=resource_url,
         paid_openrouter_api_key=paid_key,
         dry_run=dry_run,
+        force_paid=force_paid,
     )
 
 

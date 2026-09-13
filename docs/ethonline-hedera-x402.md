@@ -88,6 +88,20 @@ inference does not implicitly hand every local process a spending limit.
 `eve-bot/` builds on this: its Bots get a per-job budget and an approval card
 above it. See `eve-bot/demo/README.md`.
 
+## Showing the cash lane on purpose
+
+Free-first means the cash lane is invisible whenever free works — correct
+behaviour, and the reason it is hard to demo without breaking your own keys.
+
+```bash
+echo 'FREERIDE_X402_FORCE_PAID=1' >> ~/.freeride/.env
+freeride restart
+freeride ask "reply with the single word pong"   # pays; free never tried
+```
+
+`freeride wallet status` prints a FORCE PAID line while it is on. Every
+request settles real HBAR, so unset it and restart when the demo is over.
+
 ## Bundled demo wallet
 
 A funded testnet payer ships in the package so the cash lane works with no

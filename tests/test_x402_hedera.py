@@ -11,6 +11,7 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from freeride.core.chat_schema import ChatResponse
@@ -509,3 +510,105 @@ class TestPresetsDoNotTriggerPayment:
 
         assert resp.status_code == 200
         settle.assert_not_called()
+
+
+class TestForcePaidDemoSwitch:
+    """FREERIDE_X402_FORCE_PAID skips the free ladder on purpose.
+
+    The cash lane is invisible whenever free works — which is the product
+    working as intended, and also why it cannot be shown without sabotaging
+    the operator's provider keys. The switch exists for demos, so it must be
+    off by default, must not fire without a ready wallet, and must actually
+    reach the cash lane on both routes. A NameError in this path once made it
+    to runtime because nothing exercised it.
+    """
+
+    def _armed(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("FREERIDE_X402_ENABLED", "1")
+        monkeypatch.setenv("FREERIDE_X402_PAY_TO", "0.0.5000")
+        monkeypatch.setenv("FREERIDE_X402_PAYER_ACCOUNT", "0.0.4000")
+        monkeypatch.setenv("FREERIDE_X402_PAYER_KEY", "0xabc")
+        monkeypatch.setenv("FREERIDE_X402_PAID_OPENROUTER_API_KEY", "sk-paid")
+
+    def test_off_by_default(self, monkeypatch):
+        from freeride.core.x402_hedera import load_x402_config
+
+        assert load_x402_config().force_paid is False
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "YES"])
+    def test_parses_truthy_values(self, monkeypatch, value):
+        from freeride.core.x402_hedera import load_x402_config
+
+        monkeypatch.setenv("FREERIDE_X402_FORCE_PAID", value)
+        assert load_x402_config().force_paid is True
+
+    def test_chat_route_pays_without_trying_free(self, monkeypatch):
+        self._armed(monkeypatch)
+        monkeypatch.setenv("FREERIDE_X402_FORCE_PAID", "1")
+        # A provider that would happily serve for free; it must not be asked.
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("free-answer"))
+        app = create_app(providers=[provider])
+
+        async def _settle(cfg, **kwargs):  # noqa: ARG001
+            return ({"payer": "0.0.4000"}, {"success": True, "transaction": "0.0.1@2.3"})
+
+        async def _catalog(_providers, group=True):  # noqa: ARG001
+            return {"openrouter": ["llama-3.1-8b-instruct"]}
+
+        with (
+            patch("freeride.server.routes.chat.get_or_fetch_catalog", new=_catalog),
+            patch(
+                "freeride.server.routes.chat.resolve_auto_model",
+                return_value=("llama-3.1-8b-instruct", "openrouter"),
+            ),
+            patch("freeride.server.routes.chat.auto_pay_settle", new=_settle),
+            patch(
+                "freeride.server.routes.chat._complete_paid_lane",
+                new=AsyncMock(return_value=JSONResponse(status_code=200, content={"paid": True})),
+            ) as paid,
+        ):
+            resp = TestClient(app).post(
+                "/v1/chat/completions",
+                json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 200
+        paid.assert_awaited()
+        provider.forward_chat.assert_not_awaited()
+
+    def test_does_not_fire_without_a_ready_wallet(self, monkeypatch):
+        """No pay_to means no cash lane; the switch must not strand the request."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+        monkeypatch.setenv("FREERIDE_X402_FORCE_PAID", "1")
+        monkeypatch.setenv("FREERIDE_X402_ENABLED", "1")
+        provider = _StubProvider("openrouter", chat_result=_ok_chat("free-answer"))
+        app = create_app(providers=[provider])
+
+        async def _catalog(_providers, group=True):  # noqa: ARG001
+            return {"openrouter": ["llama-3.1-8b-instruct"]}
+
+        with (
+            patch("freeride.server.routes.chat.get_or_fetch_catalog", new=_catalog),
+            patch(
+                "freeride.server.routes.chat.resolve_auto_model",
+                return_value=("llama-3.1-8b-instruct", "openrouter"),
+            ),
+        ):
+            resp = TestClient(app).post(
+                "/v1/chat/completions",
+                json={"model": "auto", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        # Falls through to the free ladder rather than failing.
+        assert resp.status_code == 200
+        provider.forward_chat.assert_awaited()
+
+    def test_fx_route_reaches_the_cash_lane(self, monkeypatch):
+        """Guards the exact NameError that shipped: the helper must exist."""
+        from freeride.server.routes import fx as fx_route
+
+        assert hasattr(fx_route, "_fx_maybe_cash_lane")
+        source = __import__("inspect").getsource(fx_route.fx_chat)
+        assert "force_paid" in source
+        assert "_fx_maybe_cash_lane" in source

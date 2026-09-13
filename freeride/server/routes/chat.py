@@ -523,6 +523,27 @@ async def chat_completions(request: Request, body: ChatRequest):
                     return maybe
             raise
 
+    # Demo switch. The cash lane is invisible when free works, which is the
+    # product's whole point and also makes it impossible to show without
+    # sabotaging the operator's provider keys. This skips the free ladder so
+    # the paid path can be demonstrated deliberately. It spends real money on
+    # every request, so it is off unless explicitly asked for.
+    if x402_cfg.force_paid and x402_cfg.ready:
+        logger.warning(
+            "FREERIDE_X402_FORCE_PAID is on: skipping free providers and paying "
+            "for this request. Unset it to go back to free-first."
+        )
+        forced = await _maybe_402(
+            x402_cfg,
+            request=request,
+            free_detail={"forced": "FREERIDE_X402_FORCE_PAID=1; free providers were not tried"},
+            error="Paid lane forced for demonstration",
+            body=body,
+            ctx=ctx,
+        )
+        if forced is not None:
+            return forced
+
     chosen_provider, response = await try_call_with_failover(
         chain,
         cooldown,

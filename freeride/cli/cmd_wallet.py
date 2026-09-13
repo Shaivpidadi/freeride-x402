@@ -67,6 +67,8 @@ def cmd_wallet_status(_args=None) -> int:
     print(f"  facilitator : {cfg.facilitator}")
     print(f"  fee_payer   : {cfg.fee_payer or DEFAULT_FEE_PAYER + ' (default)'}")
     print(f"  dry_run     : {'yes' if cfg.dry_run else 'no'}")
+    if cfg.force_paid:
+        print("  FORCE PAID  : ON - free providers are skipped; every request pays")
     demo = demo_wallet_in_use()
     suffix = "  [BUNDLED DEMO WALLET - public key, testnet only]" if demo else ""
     print(f"  payer       : {(account if account else '(not set)')}{suffix}")

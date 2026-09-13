@@ -726,6 +726,26 @@ async def fx_chat(request: Request):
             endpoint="fx",
         )
 
+    # Demo switch — see the matching block in routes/chat.py. The agent is the
+    # surface a judge actually watches, so it needs the same deliberate way to
+    # reach the paid lane without breaking the operator's free keys.
+    if x402_cfg.force_paid and x402_cfg.ready:
+        logger.warning(
+            "FREERIDE_X402_FORCE_PAID is on: skipping free providers and paying "
+            "for this fx request."
+        )
+        forced = await _fx_maybe_cash_lane(
+            x402_cfg,
+            request=request,
+            openai_request=openai_request,
+            ctx=ctx,
+            free_detail={"forced": "FREERIDE_X402_FORCE_PAID=1; free providers were not tried"},
+            want_stream=is_streaming,
+            error="Paid lane forced for demonstration",
+        )
+        if forced is not None:
+            return forced
+
     attempts = _materialize_attempts(
         chain,
         agent_candidates,
