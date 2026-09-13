@@ -7,10 +7,12 @@ import {
   JOB_BUDGET_TINYBARS,
   X402Error,
   formatHbar,
+  noteAuthorization,
   payViaFreeride,
   recordPayment,
   requirementsFromChallenge,
   spentOnJob,
+  takeAuthorization,
   walletPolicy,
 } from "../../../lib/x402";
 
@@ -71,7 +73,10 @@ export default defineTool({
    */
   approval: async (ctx) => {
     const input = ctx.toolInput as Input | undefined;
-    if (input === undefined) return { type: "user-approval" };
+    if (input === undefined) {
+      noteAuthorization(ctx.callId, "human");
+      return { type: "user-approval" };
+    }
 
     // Nothing to authorize until we know money is involved; a free fetch is
     // just a fetch. Anything that might pay goes through the budget.
@@ -81,13 +86,16 @@ export default defineTool({
       const who = operator(ctx);
       const spent = await spentOnJob(who.workspaceId, input.jobId);
       if (spent + want <= JOB_BUDGET_TINYBARS) {
+        noteAuthorization(ctx.callId, "policy");
         return {
           type: "approved",
           reason: `within job budget (${formatHbar(spent + want)} of ${formatHbar(JOB_BUDGET_TINYBARS)})`,
         };
       }
+      noteAuthorization(ctx.callId, "human");
       return { type: "user-approval" };
     } catch {
+      noteAuthorization(ctx.callId, "human");
       return { type: "user-approval" };
     }
   },
@@ -220,7 +228,7 @@ export default defineTool({
       payTo: payment.payTo,
       resourceUrl: input.url,
       transaction: payment.transaction,
-      approved: "policy",
+      approved: takeAuthorization(ctx.callId),
     });
 
     let retried: Response;

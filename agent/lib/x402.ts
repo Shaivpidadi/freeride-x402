@@ -173,6 +173,34 @@ export async function spentOnJob(workspaceId: string, jobId: string): Promise<nu
   return total;
 }
 
+/**
+ * How a payment came to be authorized.
+ *
+ * The approval hook and `execute` are separate calls, so the decision has to
+ * be carried between them or the feed cannot say who authorized a payment.
+ * They share `callId`. `unknown` exists so the audit trail never *claims* a
+ * human signed off when we cannot prove it.
+ */
+export type Authorization = "policy" | "human" | "unknown";
+
+const decisions = new Map<string, Authorization>();
+const MAX_TRACKED = 200;
+
+export function noteAuthorization(callId: string, decision: Authorization): void {
+  if (decisions.size >= MAX_TRACKED) {
+    const oldest = decisions.keys().next().value;
+    if (oldest !== undefined) decisions.delete(oldest);
+  }
+  decisions.set(callId, decision);
+}
+
+/** Reads and clears the decision for a call. */
+export function takeAuthorization(callId: string): Authorization {
+  const found = decisions.get(callId);
+  decisions.delete(callId);
+  return found ?? "unknown";
+}
+
 /** Write a payment into the feed the operator reads. */
 export async function recordPayment(input: {
   workspaceId: string;
@@ -182,7 +210,7 @@ export async function recordPayment(input: {
   payTo: string;
   resourceUrl: string;
   transaction: string | null;
-  approved: "policy" | "human";
+  approved: Authorization;
 }): Promise<void> {
   const explorer =
     input.transaction === null
