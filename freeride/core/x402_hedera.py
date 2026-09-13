@@ -279,6 +279,14 @@ def attach_payment_response(
     response.headers[HEADER_PAYMENT_RESPONSE] = encode_settlement_response(settlement)
     response.headers["X-FreeRide-Paid"] = "hedera-x402"
     response.headers["X-FreeRide-Lane"] = "paid"
+    # PAYMENT-RESPONSE is the spec-shaped receipt, but it is base64 JSON. These
+    # two are the same facts a human can read straight out of `curl -i`.
+    receipt = last_settlement()
+    if receipt is not None:
+        if receipt.get("amount_hbar"):
+            response.headers["X-FreeRide-Paid-Hbar"] = str(receipt["amount_hbar"])
+        if receipt.get("transaction"):
+            response.headers["X-FreeRide-Payment-Tx"] = str(receipt["transaction"])
     return response
 
 

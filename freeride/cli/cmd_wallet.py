@@ -52,6 +52,27 @@ def _mask(value: str) -> str:
     return value[:4] + "…" + value[-4:]
 
 
+def _daemon_last_payment() -> dict | None:
+    """The running daemon's most recent settlement, if it is up.
+
+    The receipt is process state in the gateway, and this CLI is a separate
+    process, so asking over the local API is the only way to see it. Best
+    effort: a wallet report should never fail because the daemon is stopped.
+    """
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - fixed localhost URL
+            "http://127.0.0.1:11343/v1/_freeride/x402/policy", timeout=3
+        ) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    payment = body.get("last_payment")
+    return payment if isinstance(payment, dict) else None
+
+
 def cmd_wallet_status(_args=None) -> int:
     load_dotenv_into_environ()
     cfg = load_x402_config()
@@ -76,6 +97,13 @@ def cmd_wallet_status(_args=None) -> int:
     print(f"  auto-pay    : {'yes' if (cfg.ready and payer_set) else 'no'}")
     paid = bool(cfg.paid_openrouter_api_key)
     print(f"  paid upstream key : {'set' if paid else 'missing'}")
+    receipt = _daemon_last_payment()
+    if receipt is not None and receipt.get("transaction"):
+        print(
+            f"  last payment      : {receipt.get('amount_hbar', '?')} HBAR "
+            f"-> {receipt.get('pay_to', '?')}"
+        )
+        print(f"                      {receipt['transaction']}")
     if demo:
         print()
         print("  This is the demo payer that ships with FreeRide. Anyone can spend it.")
