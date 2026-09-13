@@ -118,6 +118,7 @@ export type ActivityKind =
   | "job.failed"
   | "job.cancelled"
   | "job.learned"
+  | "job.paid"
   | "input.requested"
   | "computer.restored"
   | "computer.failed"

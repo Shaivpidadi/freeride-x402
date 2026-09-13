@@ -22,6 +22,7 @@ const STEP_WORDS: Readonly<Record<string, string>> = {
   "job.failed": "Failed",
   "job.cancelled": "Cancelled",
   "job.learned": "Learned",
+  "job.paid": "Paid",
 };
 
 /** How close to the bottom still counts as following the conversation. */
