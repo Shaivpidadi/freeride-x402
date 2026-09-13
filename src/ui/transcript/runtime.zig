@@ -1,4 +1,5 @@
 const std = @import("std");
+const paid_turn = @import("../../core/shared/paid_turn.zig");
 const debug_trace = @import("../../core/shared/debug_trace.zig");
 const managed_execution = @import("../../core/execution/managed_execution.zig");
 const display_width = @import("../../core/shared/display_width.zig");
@@ -405,6 +406,16 @@ fn formatTurnSummaryLine(buf: []u8, summary: types.TurnSummary) []const u8 {
     var out: std.Io.Writer = .fixed(buf);
     out.print("  {s}", .{turn}) catch return "  ";
     activity_status.appendTokenProgressSuffix(&out, summary.token_progress) catch return out.buffered();
+    // A turn that spent money says so, next to what it cost in time and
+    // tokens. Green because it succeeded, dim-weight because the payment is
+    // the mechanism working, not an alarm.
+    if (paid_turn.take()) |receipt| {
+        if (receipt.amount_hbar.len > 0) {
+            out.print(" \x1b[32m· {s} HBAR\x1b[0m", .{receipt.amount_hbar}) catch return out.buffered();
+        } else {
+            out.print(" \x1b[32m· paid\x1b[0m", .{}) catch return out.buffered();
+        }
+    }
     return out.buffered();
 }
 

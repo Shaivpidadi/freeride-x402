@@ -1,4 +1,5 @@
 const std = @import("std");
+const paid_turn = @import("../core/shared/paid_turn.zig");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const secret = @import("../core/auth/secret.zig");
@@ -3266,6 +3267,21 @@ fn consumeSseStreamTraced(
                     if (model_val == .string and model_val.string.len > 0) {
                         traceResolvedModelOnce(trace.requested_model, "sse.response-metadata.modelId", model_val.string, trace.ctx);
                     }
+                }
+            }
+            // FreeRide reports a settled Hedera payment here: a streaming
+            // client never sees the response headers that carry it otherwise.
+            if (root.object.get("freerideLane")) |lane_val| {
+                if (lane_val == .string and std.mem.eql(u8, lane_val.string, "paid")) {
+                    const amount = if (root.object.get("freeridePaidHbar")) |a|
+                        (if (a == .string) a.string else "")
+                    else
+                        "";
+                    const tx = if (root.object.get("freeridePaymentTx")) |t|
+                        (if (t == .string) t.string else "")
+                    else
+                        "";
+                    paid_turn.record(amount, tx);
                 }
             }
         } else if (std.mem.eql(u8, event_type, "error")) {
