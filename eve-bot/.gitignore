@@ -1,0 +1,19 @@
+node_modules
+.eve
+.data
+.vercel
+.env
+.env.local
+*.log
+.output
+.next
+next-env.d.ts
+*.tsbuildinfo
+.env*.local
+.env*
+!.env.example
+certificates
+
+# eve build output + local agent state
+.output/
+.eve/
