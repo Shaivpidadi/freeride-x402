@@ -235,6 +235,61 @@ async def x402_pay(request: Request) -> JSONResponse:
     )
 
 
+@router.post("/v1/_freeride/x402/force-paid")
+async def x402_force_paid(request: Request) -> JSONResponse:
+    """Turn the demo switch on or off without restarting the daemon.
+
+    ``load_x402_config()`` reads the environment per request, so flipping it
+    here takes effect on the very next call. That is the point: a demo should
+    be able to show free, then show paid, in one uninterrupted session instead
+    of editing a dotenv and bouncing the process mid-sentence.
+
+    The setting lives in this process only. A restart returns to whatever
+    ``~/.freeride/.env`` says, so a demo cannot silently leave the wallet
+    spending forever.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict) or "on" not in body:
+        return _error(400, "invalid_request", 'Send {"on": true} or {"on": false}.')
+
+    turn_on = bool(body["on"])
+    cfg = load_x402_config()
+    if turn_on and not cfg.ready:
+        return _error(
+            409,
+            "wallet_not_ready",
+            "The cash lane is not configured, so forcing it would only produce 402s. "
+            "Run `freeride wallet setup` first.",
+        )
+
+    if turn_on:
+        os.environ["FREERIDE_X402_FORCE_PAID"] = "1"
+        logger.warning(
+            "FORCE PAID enabled at runtime: free providers will be skipped and "
+            "every request will settle real value until this is turned off."
+        )
+    else:
+        os.environ.pop("FREERIDE_X402_FORCE_PAID", None)
+        logger.info("FORCE PAID disabled at runtime: back to free-first.")
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "ok": True,
+            "force_paid": turn_on,
+            "persisted": False,
+            "note": (
+                "Paying for every request; free providers are skipped."
+                if turn_on
+                else "Free-first restored."
+            ),
+        },
+    )
+
+
 @router.get("/v1/_freeride/x402/policy")
 async def x402_policy() -> dict[str, Any]:
     """What an agent is allowed to spend, without exposing the key.
@@ -254,5 +309,6 @@ async def x402_policy() -> dict[str, Any]:
         "allowed_payees": allowed,
         "facilitator": cfg.facilitator,
         "dry_run": cfg.dry_run,
+        "force_paid": cfg.force_paid,
         "header_payment_required": HEADER_PAYMENT_REQUIRED,
     }

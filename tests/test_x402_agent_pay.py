@@ -255,3 +255,45 @@ def test_policy_reports_limits_without_leaking_the_key(monkeypatch: pytest.Monke
     assert body["max_amount"] == "250000"
     assert body["allowed_payees"] == ["0.0.5000"]
     assert "0xabc" not in json.dumps(body)
+
+
+# ─── the demo switch, flipped at runtime ─────────────────────────────
+
+
+def test_force_paid_toggles_without_restart(monkeypatch: pytest.MonkeyPatch):
+    """A demo has to go free -> paid -> free in one session."""
+    _wallet(monkeypatch)
+    client = _client()
+
+    assert client.get(POLICY_URL).json()["force_paid"] is False
+
+    on = client.post("/v1/_freeride/x402/force-paid", json={"on": True})
+    assert on.status_code == 200
+    assert on.json()["force_paid"] is True
+    assert client.get(POLICY_URL).json()["force_paid"] is True
+
+    off = client.post("/v1/_freeride/x402/force-paid", json={"on": False})
+    assert off.status_code == 200
+    assert off.json()["force_paid"] is False
+    assert client.get(POLICY_URL).json()["force_paid"] is False
+
+
+def test_force_paid_is_refused_without_a_ready_wallet(monkeypatch: pytest.MonkeyPatch):
+    """Forcing a lane that cannot pay would only manufacture 402s."""
+    monkeypatch.setenv("FREERIDE_X402_ENABLED", "1")  # no pay_to
+    resp = _client().post("/v1/_freeride/x402/force-paid", json={"on": True})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["type"] == "wallet_not_ready"
+
+
+def test_force_paid_needs_an_explicit_state(monkeypatch: pytest.MonkeyPatch):
+    _wallet(monkeypatch)
+    resp = _client().post("/v1/_freeride/x402/force-paid", json={})
+    assert resp.status_code == 400
+
+
+def test_force_paid_is_not_persisted(monkeypatch: pytest.MonkeyPatch):
+    """An interrupted demo must not leave the wallet paying forever."""
+    _wallet(monkeypatch)
+    body = _client().post("/v1/_freeride/x402/force-paid", json={"on": True}).json()
+    assert body["persisted"] is False

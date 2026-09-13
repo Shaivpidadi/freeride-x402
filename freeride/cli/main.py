@@ -302,6 +302,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where to write the .env file (default: ~/.freeride/.env)",
     )
 
+    p_paid = sub.add_parser(
+        "paid",
+        help="Demo switch: pay for every request instead of trying free first",
+    )
+    p_paid.add_argument(
+        "state",
+        nargs="?",
+        choices=["on", "off"],
+        help="Turn the paid lane on or off. Omit to show the current state.",
+    )
+
     return parser
 
 
@@ -398,6 +409,10 @@ def main(argv: list[str] | None = None) -> int:
 
         return cmd_keys(args)
 
+    if args.command == "paid":
+        from freeride.cli.cmd_paid import cmd_paid
+
+        return cmd_paid(args)
     if args.command == "wallet":
         from freeride.cli.cmd_wallet import cmd_wallet
 
